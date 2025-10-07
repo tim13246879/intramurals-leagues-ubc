@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UBC Intramural Schedule Aggregator</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>UBC Intramurals Schedule</h1>
+      <p>Select your teams from any league to build a combined schedule.</p>
+    </header>
+
+    <main>
+      <section class="controls">
+        <div class="control-group">
+          <label for="league-select">League</label>
+          <select id="league-select">
+            <option value="" disabled selected>Select a league</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="team-select">Team</label>
+          <select id="team-select" disabled>
+            <option value="" disabled selected>Select a team</option>
+          </select>
+        </div>
+        <button id="add-team" disabled>Add team</button>
+      </section>
+
+      <section>
+        <h2>Selected teams</h2>
+        <ul id="selected-teams" class="selected-teams"></ul>
+      </section>
+
+      <section>
+        <h2>Schedules</h2>
+        <div id="schedules" class="schedules"></div>
+      </section>
+
+      <section id="status" class="status" aria-live="polite"></section>
+    </main>
+
+    <footer>
+      <p>
+        Data sourced from
+        <a href="https://recreation.ubc.ca/intramurals/leagues/" target="_blank" rel="noopener">UBC Recreation</a>.
+        Schedules refresh automatically every six hours.
+      </p>
+    </footer>
+
+    <script type="module" src="/client/index.js"></script>
+  </body>
+</html>

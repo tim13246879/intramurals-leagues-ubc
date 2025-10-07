@@ -1,0 +1,10 @@
+{
+  "name": "intramurals-leagues-ubc",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc && npm run copy:static",
+    "copy:static": "rm -rf dist/public && mkdir -p dist && cp -r public dist/",
+    "start": "node dist/server/server.js"
+  }
+}
