@@ -1,0 +1,154 @@
+:root {
+  color-scheme: light dark;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #0d1b2a;
+  color: #e0e1dd;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+header,
+footer {
+  background-color: rgba(0, 43, 91, 0.9);
+  padding: 1.5rem;
+  text-align: center;
+}
+
+main {
+  flex: 1;
+  padding: 2rem;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+h1,
+h2 {
+  margin-top: 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+  margin-bottom: 2rem;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+select,
+button {
+  padding: 0.5rem 0.75rem;
+  font-size: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(224, 225, 221, 0.3);
+  background-color: rgba(13, 27, 42, 0.8);
+  color: inherit;
+}
+
+button:disabled,
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background-color: #2196f3;
+  color: #fff;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+}
+
+.selected-teams {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+.selected-teams li {
+  background: rgba(0, 43, 91, 0.6);
+  padding: 0.5rem 0.75rem;
+  border-radius: 999px;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.selected-teams button {
+  background: transparent;
+  border: 1px solid rgba(224, 225, 221, 0.5);
+  color: inherit;
+  padding: 0.25rem 0.5rem;
+}
+
+.schedules {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.schedule-card {
+  background: rgba(13, 27, 42, 0.8);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.schedule-card h3 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+}
+
+.schedule-card table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.schedule-card th,
+.schedule-card td {
+  padding: 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(224, 225, 221, 0.1);
+}
+
+.schedule-card tr:last-child td {
+  border-bottom: none;
+}
+
+.status {
+  margin-top: 2rem;
+  font-style: italic;
+  min-height: 1.5rem;
+}
+
+.status.error {
+  color: #ff6b6b;
+}
+
+@media (max-width: 600px) {
+  main {
+    padding: 1rem;
+  }
+
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
