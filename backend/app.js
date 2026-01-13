@@ -345,6 +345,12 @@ const port = process.env.PORT || 3000;
 // Middleware
 app.use(express.json());
 
+// COOP header for Google Sign-In popup support
+app.use((req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  next();
+});
+
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, '../frontend')));
 
