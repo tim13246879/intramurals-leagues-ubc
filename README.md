@@ -1,154 +1,170 @@
-# intramurals-leagues-ubc
+# UBC Intramurals Notifier
 
-A web app that lets users follow specific UBC intramural league teams and receive notifications when new games are scheduled.
+A web app that lets users follow UBC intramural teams and receive notifications (email + Google Calendar) when new games are scheduled.
 
 ## Features
 
-- **Browse teams** by sport → tier → team
-- **Search by player name** to find all teams a person plays on
-- **Search by team name** for direct lookup
-- **Subscribe to teams** to get notified of new games
-- **Notifications** via email, SMS, or Google Calendar (extensible)
+- Browse teams by sport, tier, and team
+- Search by team name or player name
+- Subscribe to teams with Google Sign-In
+- Email notifications when new games are scheduled
+- Google Calendar integration - games automatically added to your calendar
+- Daily automated scraping of UBC Recreation portal
 
 ## Architecture
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌──────────────────┐
-│   Frontend  │────▶│  Express    │────▶│  SQLite Database │
-│   (React?)  │     │  REST API   │     │                  │
+│   Frontend  │────▶│   Express   │────▶│  SQLite Database │
+│ (Vanilla JS)│     │   REST API  │     │                  │
 └─────────────┘     └─────────────┘     └──────────────────┘
                           │
-                          ▼
-                    ┌─────────────┐
-                    │  Scraper    │ (scheduled)
-                    │  Service    │
-                    └─────────────┘
-                          │
-                          ▼
-                    ┌─────────────┐
-                    │ Notification│
-                    │  Service    │
-                    └─────────────┘
-                     ╱     │     ╲
-                    ▼      ▼      ▼
-                 Email   SMS   Google
-                              Calendar
+                    ┌─────┴─────┐
+                    ▼           ▼
+              ┌──────────┐ ┌──────────┐
+              │ Scheduler│ │  Google  │
+              │ (node-   │ │  OAuth   │
+              │  cron)   │ │          │
+              └────┬─────┘ └──────────┘
+                   │
+         ┌─────────┼─────────┐
+         ▼         ▼         ▼
+    ┌────────┐ ┌────────┐ ┌────────┐
+    │ Teams  │ │ Games  │ │Notific-│
+    │Scraper │ │Scraper │ │ations  │
+    └────────┘ └────────┘ └────────┘
+                              │
+                         ┌────┴────┐
+                         ▼         ▼
+                      Email    Calendar
 ```
 
-## Data Model
+## Quick Start
 
-### Existing Tables
-- `leagues` - Sports (Basketball, Soccer, etc.)
-- `tiers` - Divisions within each league
-- `teams` - Teams within each tier
-- `games` - Scheduled games between teams
-- `players` - Player names
-- `team_players` - Links players to teams
+```bash
+# Setup
+cd backend
+npm install
+cp .env.example .env     # Edit with your credentials
 
-### New Tables (TODO)
-- `users` - User accounts (email and/or phone, optional google_id)
-- `subscriptions` - Which teams a user follows
-- `notification_preferences` - Per-user notification settings (email/sms/calendar)
-- `game_notifications` - Log of sent notifications (prevent duplicates)
+# Initialize and populate database
+npm run init-db
+npm run scrape-teams
+npm run scrape-games
 
-## Authentication Strategy
-
-**Two-tier approach:**
-
-1. **No-account mode (default):** User provides email or phone number to subscribe. No password needed - subscriptions are tied to that contact method. Unsubscribe link included in notifications.
-
-2. **Google Sign-In (optional):** Required only for Google Calendar integration. OAuth flow grants calendar write access. User can still use email/SMS alongside calendar.
-
+# Run server
+npm start                # http://localhost:3000
 ```
-User provides email/phone
-         │
-         ▼
-    ┌─────────┐
-    │Subscribe│──────────────────────────────┐
-    │to teams │                              │
-    └─────────┘                              │
-         │                                   │
-         ▼                                   ▼
-   Want calendar sync?              Email/SMS notifications
-         │                                (no auth needed)
-         ▼
-   Google OAuth ──▶ Calendar events
+
+## Environment Variables
+
+Create `backend/.env` with:
+
+```env
+# Google OAuth (required)
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+
+# Calendar OAuth redirect
+GOOGLE_REDIRECT_URI=http://localhost:3000/api/v1/auth/calendar/callback
+
+# Email notifications (Gmail with app password)
+EMAIL_USER=your-email@gmail.com
+EMAIL_PASS=your-app-password
+
+# Internal API (change in production)
+INTERNAL_SECRET=your-secret-key
+NODE_ENV=development
 ```
 
 ## API Endpoints
 
 ### Public
 - `GET /api/v1/leagues` - List all leagues
-- `GET /api/v1/leagues/:leagueId/teams` - Teams in a league (grouped by tier)
-- `GET /api/v1/leagues/:leagueId/teams/:teamId/games` - Games for a team
-- `GET /api/v1/search/teams?q=` - Search teams by name
-- `GET /api/v1/search/players?q=` - Search players, returns their teams
+- `GET /api/v1/leagues/:id/teams` - Teams grouped by tier
+- `GET /api/v1/teams/:id/games` - Games for a team
+- `GET /api/v1/teams/:id/players` - Team roster
+- `GET /api/v1/search/teams?q=` - Search teams
+- `GET /api/v1/search/players?q=` - Search players
 
-### Authenticated (TODO)
-- `POST /api/v1/subscriptions` - Subscribe to a team
-- `DELETE /api/v1/subscriptions/:teamId` - Unsubscribe
-- `GET /api/v1/subscriptions` - List user's subscriptions
+### Authenticated
+- `POST /api/v1/auth/google` - Login with Google ID token
+- `POST /api/v1/subscribe` - Subscribe to a team
+- `GET /api/v1/subscriptions` - List subscriptions
+- `DELETE /api/v1/subscriptions/:id` - Unsubscribe
 - `PUT /api/v1/notifications/preferences` - Update notification settings
+- `GET /api/v1/auth/calendar` - Get Calendar OAuth URL
+- `POST /api/v1/auth/calendar/disconnect` - Disconnect calendar
+- `DELETE /api/v1/account` - Delete account
 
-## Notification Strategy
+## Deployment (Railway)
 
-Abstract notification delivery behind an interface to support multiple channels:
+1. **Push to GitHub**
 
-```javascript
-// NotificationService interface
-notify(user, game) → Promise<void>
+2. **Create Railway project**
+   - New Project → Deploy from GitHub
+   - Select repo and branch
 
-// Implementations
-EmailNotifier    - Send email via SendGrid/SES/etc.
-SMSNotifier      - Send SMS via Twilio (future)
-CalendarNotifier - Add event via Google Calendar API (future)
+3. **Add environment variables**
+   ```
+   NODE_ENV=production
+   GOOGLE_CLIENT_ID=...
+   GOOGLE_CLIENT_SECRET=...
+   GOOGLE_REDIRECT_URI=https://your-app.railway.app/api/v1/auth/calendar/callback
+   EMAIL_USER=...
+   EMAIL_PASS=...
+   INTERNAL_SECRET=...
+   ```
+
+4. **Add persistent volume**
+   - Settings → Volumes → Mount at `/app/backend`
+
+5. **Initialize database**
+   ```bash
+   railway run npm run init-db
+   railway run npm run scrape-teams
+   railway run npm run scrape-games
+   ```
+
+6. **Update Google Cloud Console**
+   - Add production redirect URI to OAuth client
+   - Add production domain to authorized origins
+
+## Project Structure
+
 ```
+backend/
+├── app.js              # Express server + API routes
+├── init-db.js          # Database schema
+├── scheduler.js        # Daily cron job for scrapers
+├── teams-scraper.js    # Scrape leagues/tiers/teams
+├── games-scraper.js    # Scrape games/rosters
+├── .env.example        # Environment template
+└── package.json
 
-**Change detection:** Compare newly scraped games against existing DB. New games trigger notifications to subscribed users.
-
-## Frontend
-
-Static HTML + vanilla JavaScript served from Express.
-
-```
 frontend/
-├── index.html      # Landing page + browse teams by sport/tier
-├── search.html     # Search by player or team name
-├── manage.html     # Manage subscriptions + notification preferences
-├── styles.css      # Shared styles
+├── index.html          # Main SPA
+├── styles.css          # Styles
 └── js/
-    ├── api.js      # Fetch wrappers for API calls
-    ├── browse.js   # Browse page logic
-    ├── search.js   # Search page logic
-    └── manage.js   # Subscription management logic
+    ├── api.js          # API client
+    └── browse.js       # UI logic
 ```
 
-No build step required. Express serves static files via `express.static('frontend')`.
+## How It Works
 
-### Security Notes
-- Use `textContent` (not `innerHTML`) when rendering user-provided data to prevent XSS
-- All input validation happens on the backend - frontend validation is UX only
-- No secrets in frontend code (Google OAuth client ID is fine, it's public)
-- Serve over HTTPS in production
+1. **Scrapers** run daily at midnight Pacific via `scheduler.js`
+2. **teams-scraper** fetches league standings from UBC Recreation portal
+3. **games-scraper** visits each team page for schedules and rosters
+4. **New games** trigger notifications to subscribed users:
+   - Email sent via nodemailer
+   - Calendar event created via Google Calendar API
+5. **Frontend** authenticates with Google, manages subscriptions
 
-## Setup
+## Tech Stack
 
-```bash
-cd backend
-npm install
-node init-db.js        # Initialize database schema
-node teams-scraper.js  # Scrape all teams/standings
-node games-scraper.js  # Scrape game schedules
-node app.js            # Start server on :3000
-```
-
-## TODO
-
-- [ ] Wire API routes to database
-- [ ] Add user authentication
-- [ ] Implement subscription system
-- [ ] Build notification service (start with email)
-- [ ] Add scheduled scraper (cron)
-- [ ] Build frontend
-- [ ] Add team name search endpoint
-- [ ] Add player search endpoint
+- **Backend:** Node.js, Express, SQLite
+- **Frontend:** Vanilla JavaScript (no build step)
+- **Auth:** Google OAuth 2.0
+- **Notifications:** Nodemailer, Google Calendar API
+- **Scraping:** Axios, Cheerio
+- **Scheduling:** node-cron
