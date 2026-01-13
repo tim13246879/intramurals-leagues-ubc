@@ -1,9 +1,9 @@
 [build]
 builder = "nixpacks"
-buildCommand = "cd backend && npm install"
+nixpacksConfigPath = "backend/nixpacks.toml"
 
 [deploy]
-startCommand = "cd backend && npm start"
+startCommand = "cd backend && node app.js"
 healthcheckPath = "/api/v1/leagues"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
