@@ -4,6 +4,6 @@ nixpacksConfigPath = "backend/nixpacks.toml"
 
 [deploy]
 startCommand = "cd backend && node app.js"
-healthcheckPath = "/api/v1/leagues"
+healthcheckPath = "/api/health"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
