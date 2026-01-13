@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UBC IM Notify</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <header>
+    <div class="container header-row">
+      <h1><a href="/">UBC IM Notify</a></h1>
+      <div class="header-actions">
+        <button class="btn btn-header btn-icon-header" onclick="openSettingsOverlay()" title="Settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+        <button class="btn btn-header" onclick="openMyTeamsOverlay()">My Teams</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Intro -->
+    <div class="intro">
+      <p>Get notified about your UBC intramural games. Search your name, add your teams, and choose to receive email reminders, Google Calendar updates, or both.</p>
+    </div>
+
+    <!-- Search bar with dropdown -->
+    <div class="search-wrapper">
+      <div class="search-box">
+        <input type="search" id="search-input" placeholder="Search teams or players..." autocomplete="off">
+      </div>
+      <div id="search-dropdown" class="search-dropdown hidden"></div>
+    </div>
+
+    <h2>Browse Leagues</h2>
+
+    <div id="leagues-container">
+      <div class="loading">
+        <div class="spinner"></div>
+        <p>Loading leagues...</p>
+      </div>
+    </div>
+
+    <!-- Popup overlay for roster/teams -->
+    <div id="popup-overlay" class="popup-overlay hidden" onclick="closePopup(event)">
+      <div class="popup" onclick="event.stopPropagation()">
+        <div class="popup-header">
+          <h3 id="popup-title"></h3>
+          <button class="popup-close" onclick="closePopup()">&times;</button>
+        </div>
+        <div id="popup-content"></div>
+      </div>
+    </div>
+
+    <!-- My Teams overlay -->
+    <div id="myteams-overlay" class="popup-overlay hidden" onclick="closeMyTeamsOverlay(event)">
+      <div class="popup popup-wide" onclick="event.stopPropagation()">
+        <div class="popup-header">
+          <h3>My Teams</h3>
+          <button class="popup-close" onclick="closeMyTeamsOverlay()">&times;</button>
+        </div>
+        <div id="myteams-content"></div>
+      </div>
+    </div>
+
+    <!-- Settings overlay -->
+    <div id="settings-overlay" class="popup-overlay hidden" onclick="closeSettingsOverlay(event)">
+      <div class="popup" onclick="event.stopPropagation()">
+        <div class="popup-header">
+          <h3>Settings</h3>
+          <button class="popup-close" onclick="closeSettingsOverlay()">&times;</button>
+        </div>
+        <div id="settings-content"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script src="js/browse.js"></script>
+</body>
+</html>
