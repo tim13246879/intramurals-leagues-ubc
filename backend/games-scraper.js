@@ -419,6 +419,9 @@ async function scrapeAllTeams(concurrency = 5) {
       console.log(`\n🔔 ${totals.newGames} new games detected - ready for notifications`);
     }
 
+    // Output JSON for scheduler to parse
+    console.log(JSON.stringify({ newGameIds: totals.newGameIds }));
+
     return totals;
 
   } finally {

@@ -1037,6 +1037,57 @@ app.post('/api/v1/test/add-game', async (req, res) => {
   }
 });
 
+// ==================== INTERNAL ENDPOINTS ====================
+
+// Internal endpoint to trigger notifications for new games (called by scheduler)
+const INTERNAL_SECRET = process.env.INTERNAL_SECRET || 'dev-secret-change-in-production';
+
+app.post('/api/internal/notify-games', async (req, res) => {
+  const authHeader = req.headers['x-internal-secret'];
+  if (authHeader !== INTERNAL_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { gameIds } = req.body;
+  if (!Array.isArray(gameIds) || gameIds.length === 0) {
+    return res.json({ success: true, notified: 0 });
+  }
+
+  console.log(`[Internal] Triggering notifications for ${gameIds.length} new games`);
+
+  let notified = 0;
+  for (const gameId of gameIds) {
+    try {
+      const game = await db.get(`
+        SELECT g.*, t1.name as team1_name, t2.name as team2_name, ti.name as tier_name
+        FROM games g
+        JOIN teams t1 ON g.team1_id = t1.id
+        JOIN teams t2 ON g.team2_id = t2.id
+        JOIN tiers ti ON g.tier_id = ti.id
+        WHERE g.id = ?
+      `, gameId);
+
+      if (game) {
+        await notifySubscribersOfNewGame(game);
+        notified++;
+      }
+    } catch (error) {
+      console.error(`[Internal] Failed to notify for game ${gameId}:`, error.message);
+    }
+  }
+
+  res.json({ success: true, notified });
+});
+
+// ==================== SERVER STARTUP ====================
+
+import { initScheduler } from './scheduler.js';
+
 app.listen(port, () => {
   console.log(`✓ API listening on http://localhost:${port}`);
+
+  // Initialize scheduler in production
+  if (process.env.NODE_ENV === 'production') {
+    initScheduler(false); // Don't run immediately on startup
+  }
 });
