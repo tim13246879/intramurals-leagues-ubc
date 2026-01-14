@@ -10,7 +10,8 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const API_BASE = process.env.API_BASE_URL || 'http://localhost:3000';
+const PORT = process.env.PORT || 3000;
+const API_BASE = process.env.API_BASE_URL || `http://localhost:${PORT}`;
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET || 'dev-secret-change-in-production';
 
 /**
