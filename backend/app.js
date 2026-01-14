@@ -42,32 +42,56 @@ const emailTransporter = nodemailer.createTransport({
   },
 });
 
-// Send game notification email
-async function sendGameNotificationEmail(user, game, team) {
+// Send digest email with multiple games
+async function sendDigestEmail(user, gamesWithTeams) {
   if (!process.env.SMTP_USER) {
-    console.log('SMTP not configured, skipping game notification email');
+    console.log('SMTP not configured, skipping digest email');
     return;
   }
 
-  const gameDate = new Date(game.datetime);
-  const dateStr = gameDate.toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-  });
-  const timeStr = gameDate.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-
-  const opponent = game.team1_name === team.name ? game.team2_name : game.team1_name;
   const firstName = user.name ? user.name.split(' ')[0] : 'there';
+  const gameCount = gamesWithTeams.length;
+
+  // Sort games by date
+  gamesWithTeams.sort((a, b) => new Date(a.game.datetime) - new Date(b.game.datetime));
+
+  // Build game cards HTML
+  const gameCardsHtml = gamesWithTeams.map(({ game, team }) => {
+    const gameDate = new Date(game.datetime);
+    const dateStr = gameDate.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    const timeStr = gameDate.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    const opponent = game.team1_name === team.name ? game.team2_name : game.team1_name;
+
+    return `
+      <div style="background: white; border-radius: 8px; padding: 15px; margin: 10px 0; border-left: 4px solid #002145;">
+        <p style="margin: 0 0 8px 0; color: #374151;">
+          <strong style="color: #002145;">${team.name}</strong> vs <strong>${opponent}</strong>
+        </p>
+        <p style="margin: 0; color: #6b7280; font-size: 14px;">
+          📅 ${dateStr} at ${timeStr} · 📍 ${game.location}
+        </p>
+      </div>
+    `;
+  }).join('');
+
+  // Get unique team names for subject/footer
+  const teamNames = [...new Set(gamesWithTeams.map(g => g.team.name))];
+  const teamsStr = teamNames.length > 2
+    ? `${teamNames.slice(0, 2).join(', ')} +${teamNames.length - 2} more`
+    : teamNames.join(' & ');
 
   try {
     await emailTransporter.sendMail({
       from: `"UBC IM Notify" <${process.env.SMTP_USER}>`,
       to: user.email,
-      subject: `🏆 New Game: ${team.name} vs ${opponent}`,
+      subject: `🏆 ${gameCount} New Game${gameCount > 1 ? 's' : ''} Scheduled`,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
           <div style="background: #002145; color: white; padding: 20px; text-align: center;">
@@ -76,20 +100,12 @@ async function sendGameNotificationEmail(user, game, team) {
           <div style="padding: 30px; background: #f9fafb;">
             <h2 style="color: #002145; margin-top: 0;">Hey ${firstName}!</h2>
             <p style="color: #374151; line-height: 1.6;">
-              A new game has been scheduled for <strong>${team.name}</strong>!
+              ${gameCount > 1
+                ? `<strong>${gameCount} new games</strong> have been scheduled for your teams!`
+                : `A new game has been scheduled for your team!`}
             </p>
-            <div style="background: white; border-radius: 8px; padding: 20px; margin: 20px 0; border-left: 4px solid #002145;">
-              <p style="margin: 0 0 10px 0; color: #374151;">
-                <strong style="color: #002145;">${team.name}</strong> vs <strong style="color: #002145;">${opponent}</strong>
-              </p>
-              <p style="margin: 0 0 5px 0; color: #6b7280;">
-                📅 ${dateStr} at ${timeStr}
-              </p>
-              <p style="margin: 0; color: #6b7280;">
-                📍 ${game.location}
-              </p>
-            </div>
-            <p style="color: #374151; line-height: 1.6;">
+            ${gameCardsHtml}
+            <p style="color: #374151; line-height: 1.6; margin-top: 20px;">
               Good luck and have fun!
             </p>
             <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">
@@ -98,15 +114,15 @@ async function sendGameNotificationEmail(user, game, team) {
           </div>
           <div style="padding: 15px; background: #e5e7eb; text-align: center;">
             <p style="margin: 0; color: #6b7280; font-size: 12px;">
-              You're receiving this because you subscribed to ${team.name} on UBC IM Notify.
+              You're receiving this because you subscribed to ${teamsStr} on UBC IM Notify.
             </p>
           </div>
         </div>
       `,
     });
-    console.log(`Game notification sent to ${user.email} for ${team.name}`);
+    console.log(`Digest email sent to ${user.email} (${gameCount} games)`);
   } catch (error) {
-    console.error('Failed to send game notification:', error.message);
+    console.error('Failed to send digest email:', error.message);
   }
 }
 
@@ -144,9 +160,9 @@ async function notifySubscribersOfNewGame(game) {
   for (const [userId, data] of userMap) {
     const team = data.team_id === team1.id ? team1 : team2;
 
-    // Send email notification
+    // Send email notification (uses digest format even for single game)
     if (data.channels.has('email')) {
-      sendGameNotificationEmail(data.user, game, team);
+      await sendDigestEmail(data.user, [{ game, team }]);
     }
 
     // Add to calendar
@@ -1062,33 +1078,103 @@ app.post('/api/internal/notify-games', async (req, res) => {
 
   const { gameIds } = req.body;
   if (!Array.isArray(gameIds) || gameIds.length === 0) {
-    return res.json({ success: true, notified: 0 });
+    return res.json({ success: true, notified: 0, emails: 0, calendarEvents: 0 });
   }
 
-  console.log(`[Internal] Triggering notifications for ${gameIds.length} new games`);
+  console.log(`[Internal] Processing notifications for ${gameIds.length} new games`);
 
-  let notified = 0;
+  // Load all games with team info
+  const games = [];
   for (const gameId of gameIds) {
-    try {
-      const game = await db.get(`
-        SELECT g.*, t1.name as team1_name, t2.name as team2_name, ti.name as tier_name
-        FROM games g
-        JOIN teams t1 ON g.team1_id = t1.id
-        JOIN teams t2 ON g.team2_id = t2.id
-        JOIN tiers ti ON g.tier_id = ti.id
-        WHERE g.id = ?
-      `, gameId);
+    const game = await db.get(`
+      SELECT g.*, t1.name as team1_name, t2.name as team2_name, ti.name as tier_name
+      FROM games g
+      JOIN teams t1 ON g.team1_id = t1.id
+      JOIN teams t2 ON g.team2_id = t2.id
+      JOIN tiers ti ON g.tier_id = ti.id
+      WHERE g.id = ?
+    `, gameId);
+    if (game) games.push(game);
+  }
 
-      if (game) {
-        await notifySubscribersOfNewGame(game);
-        notified++;
+  // Collect all team IDs involved
+  const teamIds = [...new Set(games.flatMap(g => [g.team1_id, g.team2_id]))];
+
+  // Find all subscribers to any of these teams with notifications enabled
+  const placeholders = teamIds.map(() => '?').join(',');
+  const subscribers = await db.all(`
+    SELECT DISTINCT u.id, u.email, u.name, u.calendar_refresh_token, s.team_id, np.channel, np.enabled
+    FROM users u
+    JOIN subscriptions s ON u.id = s.user_id
+    JOIN notification_preferences np ON u.id = np.user_id
+    WHERE s.team_id IN (${placeholders})
+      AND np.enabled = 1
+  `, teamIds);
+
+  // Group subscribers by user
+  const userMap = new Map();
+  for (const sub of subscribers) {
+    if (!userMap.has(sub.id)) {
+      userMap.set(sub.id, {
+        user: { id: sub.id, email: sub.email, name: sub.name, calendar_refresh_token: sub.calendar_refresh_token },
+        subscribedTeamIds: new Set(),
+        channels: new Set()
+      });
+    }
+    userMap.get(sub.id).subscribedTeamIds.add(sub.team_id);
+    userMap.get(sub.id).channels.add(sub.channel);
+  }
+
+  // For each user, find their relevant games and send notifications
+  let emailsSent = 0;
+  let calendarEventsCreated = 0;
+
+  for (const [userId, data] of userMap) {
+    // Find games where user is subscribed to team1 or team2
+    const userGames = games.filter(g =>
+      data.subscribedTeamIds.has(g.team1_id) || data.subscribedTeamIds.has(g.team2_id)
+    );
+
+    if (userGames.length === 0) continue;
+
+    // Build games with team info for this user
+    const gamesWithTeams = userGames.map(game => {
+      // Determine which team the user is subscribed to
+      const teamId = data.subscribedTeamIds.has(game.team1_id) ? game.team1_id : game.team2_id;
+      const teamName = teamId === game.team1_id ? game.team1_name : game.team2_name;
+      return { game, team: { id: teamId, name: teamName } };
+    });
+
+    // Send digest email
+    if (data.channels.has('email')) {
+      await sendDigestEmail(data.user, gamesWithTeams);
+      emailsSent++;
+    }
+
+    // Create calendar events (still individual)
+    if (data.channels.has('calendar') && data.user.calendar_refresh_token) {
+      for (const { game, team } of gamesWithTeams) {
+        const existing = await db.get(
+          'SELECT id FROM calendar_events WHERE user_id = ? AND game_id = ?',
+          [userId, game.id]
+        );
+
+        if (!existing) {
+          const eventId = await createCalendarEvent(data.user, game, team);
+          if (eventId) {
+            await db.run(
+              'INSERT INTO calendar_events (user_id, game_id, calendar_event_id) VALUES (?, ?, ?)',
+              [userId, game.id, eventId]
+            );
+            calendarEventsCreated++;
+          }
+        }
       }
-    } catch (error) {
-      console.error(`[Internal] Failed to notify for game ${gameId}:`, error.message);
     }
   }
 
-  res.json({ success: true, notified });
+  console.log(`[Internal] Sent ${emailsSent} digest emails, created ${calendarEventsCreated} calendar events`);
+  res.json({ success: true, notified: games.length, emails: emailsSent, calendarEvents: calendarEventsCreated });
 });
 
 // ==================== SERVER STARTUP ====================
