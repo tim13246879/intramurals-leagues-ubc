@@ -2,6 +2,10 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
+import https from 'https';
+
+// HTTPS agent that ignores certificate errors (needed for Railway environment)
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 /**
  * Scrapes UBC Intramurals standings pages to extract:
@@ -55,7 +59,8 @@ async function scrapeAndStoreLeague(db, activityId, leagueName, year, term) {
     const response = await axios.get(portalUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+      },
+      httpsAgent
     });
 
     const $ = cheerio.load(response.data);

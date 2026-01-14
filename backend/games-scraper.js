@@ -2,6 +2,10 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
+import https from 'https';
+
+// HTTPS agent that ignores certificate errors (needed for Railway environment)
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 /**
  * Scrapes team pages to extract:
@@ -21,7 +25,8 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
     const response = await axios.get(teamUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
+      },
+      httpsAgent
     });
     
     const $ = cheerio.load(response.data);
