@@ -36,11 +36,23 @@ const LEAGUE_CONFIG = {
 /**
  * Get current academic year and term
  * Academic year: Sept 2025 - Aug 2026 = "2025-2026"
- * Term 1: Sept-Dec, Term 2: Jan-Apr
+ * Term 1: Sept-Dec, Term 2: Jan-Aug
  */
 function getCurrentYearAndTerm() {
-  // Force Term 1 for now since Term 2 has no data yet
-  return { year: '2025-2026', term: '1' };
+  const now = new Date();
+  const month = now.getMonth(); // 0-indexed (0 = Jan, 11 = Dec)
+  const year = now.getFullYear();
+
+  // Determine academic year (starts in September)
+  // Jan-Aug: academic year started previous September
+  // Sept-Dec: academic year started this September
+  const academicStartYear = month >= 8 ? year : year - 1; // 8 = September
+  const academicYear = `${academicStartYear}-${academicStartYear + 1}`;
+
+  // Term 1: Sept-Dec, Term 2: Jan-Aug (no summer term)
+  const term = month >= 8 ? '1' : '2';
+
+  return { year: academicYear, term };
 }
 
 /**
