@@ -1,9 +1,14 @@
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 
+// Use /data volume in production (Railway), local file in development
+const DB_PATH = process.env.NODE_ENV === 'production'
+  ? '/data/intramurals.db'
+  : './intramurals.db';
+
 // Open database with promise support
 const db = await open({
-  filename: './intramurals.db',
+  filename: DB_PATH,
   driver: sqlite3.Database
 });
 
@@ -163,6 +168,6 @@ console.log('✓ All tables created successfully');
 // Close database
 await db.close();
 console.log('\n✓ Database initialized successfully!');
-console.log('Database file: ./intramurals.db');
+console.log(`Database file: ${DB_PATH}`);
 
 // thoughts: remove league table and combine into tiers table

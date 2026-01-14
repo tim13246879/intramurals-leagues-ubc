@@ -7,6 +7,11 @@ import https from 'https';
 // HTTPS agent that ignores certificate errors (needed for Railway environment)
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
+// Use /data volume in production (Railway), local file in development
+const DB_PATH = process.env.NODE_ENV === 'production'
+  ? '/data/intramurals.db'
+  : './intramurals.db';
+
 /**
  * Scrapes UBC Intramurals standings pages to extract:
  * - League name
@@ -191,7 +196,7 @@ async function scrapeAndStoreLeague(db, activityId, leagueName, year, term) {
  */
 async function scrapeAllLeagues() {
   const db = await open({
-    filename: './intramurals.db',
+    filename: DB_PATH,
     driver: sqlite3.Database
   });
 
@@ -249,7 +254,7 @@ async function scrapeAllLeagues() {
  */
 async function scrapeLeague(identifier) {
   const db = await open({
-    filename: './intramurals.db',
+    filename: DB_PATH,
     driver: sqlite3.Database
   });
 

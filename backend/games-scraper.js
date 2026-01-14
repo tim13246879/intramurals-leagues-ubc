@@ -7,6 +7,11 @@ import https from 'https';
 // HTTPS agent that ignores certificate errors (needed for Railway environment)
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
+// Use /data volume in production (Railway), local file in development
+const DB_PATH = process.env.NODE_ENV === 'production'
+  ? '/data/intramurals.db'
+  : './intramurals.db';
+
 /**
  * Scrapes team pages to extract:
  * - Games (schedule, results, scores)
@@ -343,7 +348,7 @@ async function storeTeamData(db, teamId, tierId, games, players) {
  */
 async function scrapeAllTeams(concurrency = 5) {
   const db = await open({
-    filename: './intramurals.db',
+    filename: DB_PATH,
     driver: sqlite3.Database
   });
 
@@ -439,7 +444,7 @@ async function scrapeAllTeams(concurrency = 5) {
  */
 async function scrapeTeam(teamUrl) {
   const db = await open({
-    filename: './intramurals.db',
+    filename: DB_PATH,
     driver: sqlite3.Database
   });
   

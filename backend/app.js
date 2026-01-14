@@ -11,6 +11,11 @@ import { google } from 'googleapis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Use /data volume in production (Railway), local file in development
+const DB_PATH = process.env.NODE_ENV === 'production'
+  ? '/data/intramurals.db'
+  : './intramurals.db';
+
 // Google OAuth configuration
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -359,7 +364,7 @@ let db;
 
 async function initDb() {
   db = await open({
-    filename: './intramurals.db',
+    filename: DB_PATH,
     driver: sqlite3.Database
   });
   await db.exec('PRAGMA foreign_keys = ON');
