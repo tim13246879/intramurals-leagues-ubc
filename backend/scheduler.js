@@ -139,6 +139,8 @@ async function runScrapingPipeline() {
  * Initialize the scheduler
  * @param {boolean} runImmediately - If true, run the pipeline immediately on startup
  */
+export { runScrapingPipeline };
+
 export function initScheduler(runImmediately = false) {
   // Schedule for midnight Pacific time (America/Los_Angeles)
   // Cron format: minute hour day month weekday

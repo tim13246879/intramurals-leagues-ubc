@@ -1195,9 +1195,26 @@ app.post('/api/internal/notify-games', async (req, res) => {
   res.json({ success: true, notified: games.length, emails: emailsSent, calendarEvents: calendarEventsCreated });
 });
 
+// POST /api/internal/run-scraper - Manually trigger the scraping pipeline (for testing)
+app.post('/api/internal/run-scraper', async (req, res) => {
+  const secret = req.headers['x-internal-secret'];
+  if (secret !== INTERNAL_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  console.log('[Internal] Manual scraper trigger requested');
+
+  // Run asynchronously so we can respond immediately
+  runScrapingPipeline()
+    .then(() => console.log('[Internal] Manual scraper run completed'))
+    .catch(err => console.error('[Internal] Manual scraper run failed:', err));
+
+  res.json({ success: true, message: 'Scraping pipeline started. Check server logs for progress.' });
+});
+
 // ==================== SERVER STARTUP ====================
 
-import { initScheduler } from './scheduler.js';
+import { initScheduler, runScrapingPipeline } from './scheduler.js';
 
 app.listen(port, () => {
   console.log(`✓ API listening on http://localhost:${port}`);
