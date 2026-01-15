@@ -146,8 +146,12 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
             }
             
             if (parsedDate && !isNaN(parsedDate.getTime()) && hours !== undefined) {
-              parsedDate.setHours(hours, minutes || 0, 0, 0);
-              datetime = parsedDate.toISOString();
+              // Store as local time string (Pacific time) without timezone indicator
+              // Format: YYYY-MM-DDTHH:MM:SS (no Z suffix)
+              const [month, day, year] = dateStr.split('/');
+              const hh = String(hours).padStart(2, '0');
+              const mm = String(minutes || 0).padStart(2, '0');
+              datetime = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hh}:${mm}:00`;
             }
           } catch (e) {
             console.warn(`⚠️  Could not parse datetime: ${date} ${time}`, e.message);

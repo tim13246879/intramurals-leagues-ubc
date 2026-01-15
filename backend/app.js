@@ -222,20 +222,26 @@ async function createCalendarEvent(user, game, team) {
   const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
   const opponent = game.team1_name === team.name ? game.team2_name : game.team1_name;
-  const gameDate = new Date(game.datetime);
   const durationMinutes = getGameDurationMinutes(game.league_name);
+
+  // game.datetime is stored as Pacific time without timezone (e.g., "2025-09-21T21:30:00")
+  // Calculate end time by parsing and adding duration
+  const startDateTime = game.datetime; // Already in correct format for Pacific time
+  const gameDate = new Date(game.datetime);
   const endDate = new Date(gameDate.getTime() + durationMinutes * 60 * 1000);
+  // Format end time without timezone indicator (matches start format)
+  const endDateTime = endDate.toISOString().replace('Z', '').split('.')[0];
 
   const event = {
     summary: `${team.name} vs ${opponent}`,
     description: `UBC Intramurals game\n\nTeams: ${game.team1_name} vs ${game.team2_name}`,
     location: game.location,
     start: {
-      dateTime: gameDate.toISOString(),
+      dateTime: startDateTime,
       timeZone: 'America/Vancouver',
     },
     end: {
-      dateTime: endDate.toISOString(),
+      dateTime: endDateTime,
       timeZone: 'America/Vancouver',
     },
     reminders: {
