@@ -42,6 +42,18 @@ const emailTransporter = nodemailer.createTransport({
   },
 });
 
+// Get game duration in minutes based on league/sport type
+function getGameDurationMinutes(leagueName) {
+  const name = (leagueName || '').toLowerCase();
+  if (name.includes('badminton') || name.includes('dodgeball') || name.includes('pickleball')) {
+    return 30;
+  }
+  if (name.includes('volleyball') || name.includes('roundnet')) {
+    return 45;
+  }
+  return 60; // Default: 1 hour for basketball, soccer, hockey, football, ultimate, futsal
+}
+
 // Send digest email with multiple games
 async function sendDigestEmail(user, gamesWithTeams) {
   if (!process.env.SMTP_USER) {
@@ -211,7 +223,8 @@ async function createCalendarEvent(user, game, team) {
 
   const opponent = game.team1_name === team.name ? game.team2_name : game.team1_name;
   const gameDate = new Date(game.datetime);
-  const endDate = new Date(gameDate.getTime() + 60 * 60 * 1000); // 1 hour duration
+  const durationMinutes = getGameDurationMinutes(game.league_name);
+  const endDate = new Date(gameDate.getTime() + durationMinutes * 60 * 1000);
 
   const event = {
     summary: `${team.name} vs ${opponent}`,
@@ -275,10 +288,13 @@ async function addTeamGamesToCalendar(userId, teamId) {
   // Get all upcoming games for this team
   const games = await db.all(`
     SELECT g.id, g.datetime, g.location,
-           t1.name as team1_name, t2.name as team2_name
+           t1.name as team1_name, t2.name as team2_name,
+           l.name as league_name
     FROM games g
     JOIN teams t1 ON g.team1_id = t1.id
     JOIN teams t2 ON g.team2_id = t2.id
+    JOIN tiers ti ON g.tier_id = ti.id
+    JOIN leagues l ON ti.league_id = l.id
     WHERE (g.team1_id = ? OR g.team2_id = ?)
       AND g.datetime > datetime('now')
     ORDER BY g.datetime
@@ -1087,11 +1103,13 @@ app.post('/api/internal/notify-games', async (req, res) => {
   const games = [];
   for (const gameId of gameIds) {
     const game = await db.get(`
-      SELECT g.*, t1.name as team1_name, t2.name as team2_name, ti.name as tier_name
+      SELECT g.*, t1.name as team1_name, t2.name as team2_name,
+             ti.name as tier_name, l.name as league_name
       FROM games g
       JOIN teams t1 ON g.team1_id = t1.id
       JOIN teams t2 ON g.team2_id = t2.id
       JOIN tiers ti ON g.tier_id = ti.id
+      JOIN leagues l ON ti.league_id = l.id
       WHERE g.id = ?
     `, gameId);
     if (game) games.push(game);
