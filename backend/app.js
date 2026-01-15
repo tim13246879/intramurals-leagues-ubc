@@ -34,12 +34,15 @@ function getCalendarOAuth2Client() {
 // Email configuration
 const emailTransporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: false,
+  port: parseInt(process.env.SMTP_PORT || '465'),
+  secure: true, // Use SSL on port 465
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  connectionTimeout: 10000, // 10 seconds
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
 });
 
 // Get game duration in minutes based on league/sport type
