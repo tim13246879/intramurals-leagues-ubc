@@ -12,6 +12,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@azure/communication-email": "^1.1.0",
     "axios": "1.6.0",
     "cheerio": "1.0.0-rc.12",
     "dotenv": "^17.2.3",

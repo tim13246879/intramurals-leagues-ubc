@@ -6,8 +6,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { OAuth2Client } from 'google-auth-library';
 import crypto from 'crypto';
-import nodemailer from 'nodemailer';
 import { google } from 'googleapis';
+import { sendEmail, isEmailConfigured } from './email-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,20 +31,6 @@ function getCalendarOAuth2Client() {
   );
 }
 
-// Email configuration
-const emailTransporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '465'),
-  secure: true, // Use SSL on port 465
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  connectionTimeout: 10000, // 10 seconds
-  greetingTimeout: 10000,
-  socketTimeout: 15000,
-});
-
 // Get game duration in minutes based on league/sport type
 function getGameDurationMinutes(leagueName) {
   const name = (leagueName || '').toLowerCase();
@@ -59,8 +45,8 @@ function getGameDurationMinutes(leagueName) {
 
 // Send digest email with multiple games
 async function sendDigestEmail(user, gamesWithTeams) {
-  if (!process.env.SMTP_USER) {
-    console.log('SMTP not configured, skipping digest email');
+  if (!isEmailConfigured()) {
+    console.log('Email not configured, skipping digest email');
     return;
   }
 
@@ -102,42 +88,42 @@ async function sendDigestEmail(user, gamesWithTeams) {
     ? `${teamNames.slice(0, 2).join(', ')} +${teamNames.length - 2} more`
     : teamNames.join(' & ');
 
-  try {
-    await emailTransporter.sendMail({
-      from: `"UBC IM Notify" <${process.env.SMTP_USER}>`,
-      to: user.email,
-      subject: `🏆 ${gameCount} New Game${gameCount > 1 ? 's' : ''} Scheduled`,
-      html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #002145; color: white; padding: 20px; text-align: center;">
-            <h1 style="margin: 0; font-size: 24px;">UBC IM Notify</h1>
-          </div>
-          <div style="padding: 30px; background: #f9fafb;">
-            <h2 style="color: #002145; margin-top: 0;">Hey ${firstName}!</h2>
-            <p style="color: #374151; line-height: 1.6;">
-              ${gameCount > 1
-                ? `<strong>${gameCount} new games</strong> have been scheduled for your teams!`
-                : `A new game has been scheduled for your team!`}
-            </p>
-            ${gameCardsHtml}
-            <p style="color: #374151; line-height: 1.6; margin-top: 20px;">
-              Good luck and have fun!
-            </p>
-            <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">
-              Go Thunderbirds! 🏆
-            </p>
-          </div>
-          <div style="padding: 15px; background: #e5e7eb; text-align: center;">
-            <p style="margin: 0; color: #6b7280; font-size: 12px;">
-              You're receiving this because you subscribed to ${teamsStr} on UBC IM Notify.
-            </p>
-          </div>
-        </div>
-      `,
-    });
+  const htmlContent = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background: #002145; color: white; padding: 20px; text-align: center;">
+        <h1 style="margin: 0; font-size: 24px;">UBC IM Notify</h1>
+      </div>
+      <div style="padding: 30px; background: #f9fafb;">
+        <h2 style="color: #002145; margin-top: 0;">Hey ${firstName}!</h2>
+        <p style="color: #374151; line-height: 1.6;">
+          ${gameCount > 1
+            ? `<strong>${gameCount} new games</strong> have been scheduled for your teams!`
+            : `A new game has been scheduled for your team!`}
+        </p>
+        ${gameCardsHtml}
+        <p style="color: #374151; line-height: 1.6; margin-top: 20px;">
+          Good luck and have fun!
+        </p>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">
+          Go Thunderbirds! 🏆
+        </p>
+      </div>
+      <div style="padding: 15px; background: #e5e7eb; text-align: center;">
+        <p style="margin: 0; color: #6b7280; font-size: 12px;">
+          You're receiving this because you subscribed to ${teamsStr} on UBC IM Notify.
+        </p>
+      </div>
+    </div>
+  `;
+
+  const success = await sendEmail({
+    to: user.email,
+    subject: `🏆 ${gameCount} New Game${gameCount > 1 ? 's' : ''} Scheduled`,
+    html: htmlContent,
+  });
+
+  if (success) {
     console.log(`Digest email sent to ${user.email} (${gameCount} games)`);
-  } catch (error) {
-    console.error('Failed to send digest email:', error.message);
   }
 }
 
@@ -339,49 +325,49 @@ async function addTeamGamesToCalendar(userId, teamId) {
 
 // Send welcome email to new users
 async function sendWelcomeEmail(email, name) {
-  if (!process.env.SMTP_USER) {
-    console.log('SMTP not configured, skipping welcome email');
+  if (!isEmailConfigured()) {
+    console.log('Email not configured, skipping welcome email');
     return;
   }
 
   const firstName = name ? name.split(' ')[0] : 'there';
 
-  try {
-    await emailTransporter.sendMail({
-      from: `"UBC IM Notify" <${process.env.SMTP_USER}>`,
-      to: email,
-      subject: 'Welcome to UBC IM Notify!',
-      html: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #002145; color: white; padding: 20px; text-align: center;">
-            <h1 style="margin: 0; font-size: 24px;">UBC IM Notify</h1>
-          </div>
-          <div style="padding: 30px; background: #f9fafb;">
-            <h2 style="color: #002145; margin-top: 0;">Hey ${firstName}!</h2>
-            <p style="color: #374151; line-height: 1.6;">
-              Welcome to UBC IM Notify! You're all set to receive notifications for your intramural games.
-            </p>
-            <p style="color: #374151; line-height: 1.6;">
-              <strong>Here's what you can do:</strong>
-            </p>
-            <ul style="color: #374151; line-height: 1.8;">
-              <li>Search for your name to find your teams</li>
-              <li>Subscribe to teams to get game reminders</li>
-              <li>Enable Google Calendar integration in Settings</li>
-            </ul>
-            <p style="color: #374151; line-height: 1.6;">
-              You can manage your notification preferences anytime in the Settings menu.
-            </p>
-            <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">
-              Go Thunderbirds! 🏆
-            </p>
-          </div>
-        </div>
-      `,
-    });
+  const htmlContent = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background: #002145; color: white; padding: 20px; text-align: center;">
+        <h1 style="margin: 0; font-size: 24px;">UBC IM Notify</h1>
+      </div>
+      <div style="padding: 30px; background: #f9fafb;">
+        <h2 style="color: #002145; margin-top: 0;">Hey ${firstName}!</h2>
+        <p style="color: #374151; line-height: 1.6;">
+          Welcome to UBC IM Notify! You're all set to receive notifications for your intramural games.
+        </p>
+        <p style="color: #374151; line-height: 1.6;">
+          <strong>Here's what you can do:</strong>
+        </p>
+        <ul style="color: #374151; line-height: 1.8;">
+          <li>Search for your name to find your teams</li>
+          <li>Subscribe to teams to get game reminders</li>
+          <li>Enable Google Calendar integration in Settings</li>
+        </ul>
+        <p style="color: #374151; line-height: 1.6;">
+          You can manage your notification preferences anytime in the Settings menu.
+        </p>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">
+          Go Thunderbirds! 🏆
+        </p>
+      </div>
+    </div>
+  `;
+
+  const success = await sendEmail({
+    to: email,
+    subject: 'Welcome to UBC IM Notify!',
+    html: htmlContent,
+  });
+
+  if (success) {
     console.log(`Welcome email sent to ${email}`);
-  } catch (error) {
-    console.error('Failed to send welcome email:', error.message);
   }
 }
 
