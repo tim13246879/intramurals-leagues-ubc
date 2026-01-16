@@ -214,16 +214,28 @@ async function createCalendarEvent(user, game, team) {
   const durationMinutes = getGameDurationMinutes(game.league_name);
 
   // game.datetime is stored as Pacific time without timezone (e.g., "2025-09-21T21:30:00")
-  // Calculate end time by parsing and adding duration
-  const startDateTime = game.datetime; // Already in correct format for Pacific time
-  const gameDate = new Date(game.datetime);
-  const endDate = new Date(gameDate.getTime() + durationMinutes * 60 * 1000);
-  // Format end time without timezone indicator (matches start format)
-  const endDateTime = endDate.toISOString().replace('Z', '').split('.')[0];
+  // Calculate end time by adding duration while keeping in Pacific time
+  // Parse the datetime components manually to avoid timezone conversion
+  const match = game.datetime.match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):?(\d{2})?/);
+  if (!match) {
+    console.error(`Invalid datetime format: ${game.datetime}`);
+    return null;
+  }
+  const [, year, month, day, hour, minute] = match;
+  const startDateTime = `${year}-${month}-${day}T${hour}:${minute}:00`;
+
+  const startMinutes = parseInt(hour) * 60 + parseInt(minute);
+  const endTotalMinutes = startMinutes + durationMinutes;
+  const endHour = Math.floor(endTotalMinutes / 60) % 24;
+  const endMinute = endTotalMinutes % 60;
+  // Note: This doesn't handle games crossing midnight, but intramural games don't run that late
+  const endDateTime = `${year}-${month}-${day}T${String(endHour).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}:00`;
+
+  console.log('Creating calendar event:', { startDateTime, endDateTime, league: game.league_name, tier: game.tier_name });
 
   const event = {
-    summary: `${team.name} vs ${opponent}`,
-    description: `UBC Intramurals game\n\nTeams: ${game.team1_name} vs ${game.team2_name}`,
+    summary: `${game.league_name} Intramurals -- ${game.tier_name}`,
+    description: `${game.team1_name} vs ${game.team2_name}`,
     location: game.location,
     start: {
       dateTime: startDateTime,
@@ -284,7 +296,7 @@ async function addTeamGamesToCalendar(userId, teamId) {
   const games = await db.all(`
     SELECT g.id, g.datetime, g.location,
            t1.name as team1_name, t2.name as team2_name,
-           l.name as league_name
+           ti.name as tier_name, l.name as league_name
     FROM games g
     JOIN teams t1 ON g.team1_id = t1.id
     JOIN teams t2 ON g.team2_id = t2.id
@@ -1057,10 +1069,13 @@ app.post('/api/v1/test/add-game', async (req, res) => {
     const game = await db.get(`
       SELECT g.id, g.datetime, g.location,
              t1.id as team1_id, t1.name as team1_name,
-             t2.id as team2_id, t2.name as team2_name
+             t2.id as team2_id, t2.name as team2_name,
+             ti.name as tier_name, l.name as league_name
       FROM games g
       JOIN teams t1 ON g.team1_id = t1.id
       JOIN teams t2 ON g.team2_id = t2.id
+      JOIN tiers ti ON g.tier_id = ti.id
+      JOIN leagues l ON ti.league_id = l.id
       WHERE g.id = ?
     `, [result.lastID]);
 
