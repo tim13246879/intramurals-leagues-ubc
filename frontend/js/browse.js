@@ -944,37 +944,38 @@ function renderSettingsLoaded(data) {
             onchange="handlePrefChange('email', this.checked)"
             style="margin-top: 4px;">
           <div>
-            <div>Email Notifications</div>
+            <div>Email Notifications ✉️</div>
             <div class="text-muted text-small">Receive game reminders via email</div>
           </div>
         </label>
 
         <!-- Calendar integration section -->
-        <div style="display: flex; align-items: flex-start; gap: 0.5rem;">
-          ${calendarConnected ? `
+        ${calendarConnected ? `
+          <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
             <input type="checkbox" ${calendarEnabled ? 'checked' : ''}
               onchange="handleCalendarToggle(this.checked)"
               style="margin-top: 4px;">
-            <div style="flex: 1;">
-              <div>Google Calendar</div>
+            <div>
+              <div>Google Calendar 📅</div>
               <div class="text-muted text-small">Automatically add games to your Google Calendar</div>
               <button class="btn btn-small btn-secondary" style="margin-top: 0.5rem;"
-                onclick="handleDisconnectCalendar()">
+                onclick="event.preventDefault(); handleDisconnectCalendar()">
                 Disconnect Calendar
               </button>
             </div>
-          ` : `
-            <div style="margin-left: 1.5rem;">
-              <div>Google Calendar</div>
-              <div class="text-muted text-small" style="margin-bottom: 0.5rem;">
-                Connect your Google Calendar to automatically add games
-              </div>
-              <button class="btn btn-primary" onclick="handleConnectCalendar()">
+          </label>
+        ` : `
+          <label style="display: flex; align-items: flex-start; gap: 0.5rem;">
+            <input type="checkbox" disabled style="margin-top: 4px; visibility: hidden;">
+            <div>
+              <div>Google Calendar 📅</div>
+              <div class="text-muted text-small">Connect your Google Calendar to automatically add games</div>
+              <button class="btn btn-primary" style="margin-top: 0.5rem;" onclick="handleConnectCalendar()">
                 Connect Google Calendar
               </button>
             </div>
-          `}
-        </div>
+          </label>
+        `}
       </div>
     </div>
     <div style="padding: 1rem; border-top: 1px solid var(--gray-200);">
