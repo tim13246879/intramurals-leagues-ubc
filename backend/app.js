@@ -278,6 +278,44 @@ async function createCalendarEvent(user, game, team) {
   }
 }
 
+// Check if a calendar event still exists in Google Calendar
+async function calendarEventExists(user, calendarEventId) {
+  if (!user.calendar_refresh_token || !calendarEventId) {
+    return false;
+  }
+
+  const oauth2Client = getCalendarOAuth2Client();
+  oauth2Client.setCredentials({
+    refresh_token: user.calendar_refresh_token
+  });
+
+  try {
+    const { credentials } = await oauth2Client.refreshAccessToken();
+    oauth2Client.setCredentials(credentials);
+  } catch (refreshError) {
+    console.error(`Failed to refresh token for ${user.email}:`, refreshError.message);
+    return false;
+  }
+
+  const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+  try {
+    const response = await calendar.events.get({
+      calendarId: 'primary',
+      eventId: calendarEventId
+    });
+    // Check if event is cancelled (deleted but not purged)
+    return response.data.status !== 'cancelled';
+  } catch (error) {
+    if (error.code === 404 || error.code === 410) {
+      return false;
+    }
+    // For other errors, assume it exists to avoid re-creating
+    console.error(`Error checking calendar event ${calendarEventId}:`, error.message);
+    return true;
+  }
+}
+
 // Add all existing games for a team to user's calendar
 async function addTeamGamesToCalendar(userId, teamId) {
   const user = await db.get(
@@ -310,15 +348,21 @@ async function addTeamGamesToCalendar(userId, teamId) {
   let added = 0, skipped = 0;
 
   for (const game of games) {
-    // Check if event already exists
+    // Check if we have a record of this event
     const existing = await db.get(
-      'SELECT id FROM calendar_events WHERE user_id = ? AND game_id = ?',
+      'SELECT id, calendar_event_id FROM calendar_events WHERE user_id = ? AND game_id = ?',
       [userId, game.id]
     );
 
     if (existing) {
-      skipped++;
-      continue;
+      // Verify the event still exists in Google Calendar
+      const stillExists = await calendarEventExists(user, existing.calendar_event_id);
+      if (stillExists) {
+        skipped++;
+        continue;
+      }
+      // Event was deleted from calendar, remove stale record
+      await db.run('DELETE FROM calendar_events WHERE id = ?', [existing.id]);
     }
 
     const eventId = await createCalendarEvent(user, game, team);
@@ -329,6 +373,8 @@ async function addTeamGamesToCalendar(userId, teamId) {
         [userId, game.id, eventId]
       );
       added++;
+    } else {
+      console.error(`Failed to create calendar event for game ${game.id}`);
     }
   }
 
