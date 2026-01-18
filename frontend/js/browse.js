@@ -7,6 +7,7 @@ let subscribedTeamIds = new Set(); // Track subscribed teams for UI state
 let pendingTeams = {}; // Teams added locally before sign-in: {id: {id, name, tierName}}
 let playerTeamsCache = {}; // Cache player teams for popup
 let currentUser = null;
+let popupHistory = []; // Stack for popup back navigation
 
 const PENDING_TEAMS_KEY = 'ubc_intramurals_pending_teams';
 
@@ -493,7 +494,10 @@ function renderPlayerSearchItem(player) {
 
 // ============ Popup ============
 
-function showPopup(title, content) {
+function showPopup(title, content, clearHistory = true) {
+  if (clearHistory) {
+    popupHistory = [];
+  }
   document.getElementById('popup-title').textContent = title;
   document.getElementById('popup-content').innerHTML = content;
   document.getElementById('popup-overlay').classList.remove('hidden');
@@ -501,29 +505,14 @@ function showPopup(title, content) {
 
 function closePopup(event) {
   if (!event || event.target === event.currentTarget) {
-    document.getElementById('popup-overlay').classList.add('hidden');
-  }
-}
-
-async function showTeamRoster(teamId, teamName) {
-  showPopup(`${teamName} Roster`, '<div class="search-dropdown-loading"><div class="spinner"></div></div>');
-
-  try {
-    const data = await getTeamPlayers(teamId);
-
-    if (data.players.length === 0) {
-      document.getElementById('popup-content').innerHTML = '<div class="search-dropdown-empty">No players found</div>';
-      return;
+    // If there's history, go back instead of closing
+    if (popupHistory.length > 0) {
+      const previous = popupHistory.pop();
+      document.getElementById('popup-title').textContent = previous.title;
+      document.getElementById('popup-content').innerHTML = previous.content;
+    } else {
+      document.getElementById('popup-overlay').classList.add('hidden');
     }
-
-    document.getElementById('popup-content').innerHTML = data.players.map(player => `
-      <div class="popup-item">
-        <span class="popup-item-name">${escapeHtml(player.name)}</span>
-      </div>
-    `).join('');
-
-  } catch (error) {
-    document.getElementById('popup-content').innerHTML = `<div class="search-dropdown-empty">Error: ${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -535,6 +524,7 @@ function showPlayerTeamsFromCache(playerId, playerName) {
 function showPlayerTeams(playerId, playerName, teams) {
   // Prepare teams data for Add All button
   const teamsJson = JSON.stringify(teams.map(t => ({id: t.id, name: t.name, tierName: t.tier_name}))).replace(/'/g, "\\'");
+  const escapedPlayerName = escapeHtml(playerName).replace(/'/g, "\\'");
 
   let content = teams.map(team => {
     const subscribed = isSubscribed(team.id);
@@ -547,7 +537,7 @@ function showPlayerTeams(playerId, playerName, teams) {
           <div class="popup-item-subtitle">${escapeHtml(team.tier_name)}${team.league_name ? ' - ' + escapeHtml(team.league_name) : ''}</div>
         </div>
         <div style="display: flex; gap: 0.25rem;">
-          <button class="btn btn-small btn-secondary btn-icon" onclick="showTeamRoster(${team.id}, '${escapedName}')" title="View roster">
+          <button class="btn btn-small btn-secondary btn-icon" onclick="showTeamRosterWithHistory(${team.id}, '${escapedName}', ${playerId}, '${escapedPlayerName}')" title="View roster">
             👥
           </button>
           <button
@@ -576,6 +566,37 @@ function showPlayerTeams(playerId, playerName, teams) {
   }
 
   showPopup(`${playerName}'s Teams`, content);
+}
+
+function showTeamRosterWithHistory(teamId, teamName, playerId, playerName) {
+  // Save current popup state to history before showing roster
+  popupHistory.push({
+    title: document.getElementById('popup-title').textContent,
+    content: document.getElementById('popup-content').innerHTML
+  });
+  showTeamRoster(teamId, teamName, false);
+}
+
+async function showTeamRoster(teamId, teamName, clearHistory = true) {
+  showPopup(`${teamName} Roster`, '<div class="search-dropdown-loading"><div class="spinner"></div></div>', clearHistory);
+
+  try {
+    const data = await getTeamPlayers(teamId);
+
+    if (data.players.length === 0) {
+      document.getElementById('popup-content').innerHTML = '<div class="search-dropdown-empty">No players found</div>';
+      return;
+    }
+
+    document.getElementById('popup-content').innerHTML = data.players.map(player => `
+      <div class="popup-item">
+        <span class="popup-item-name">${escapeHtml(player.name)}</span>
+      </div>
+    `).join('');
+
+  } catch (error) {
+    document.getElementById('popup-content').innerHTML = `<div class="search-dropdown-empty">Error: ${escapeHtml(error.message)}</div>`;
+  }
 }
 
 // ============ Browse Leagues ============

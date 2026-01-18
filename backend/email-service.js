@@ -108,11 +108,17 @@ class AzureEmailService {
         console.log(`[Azure Email] Email sent to ${to}`);
         return true;
       } else {
-        console.error(`[Azure Email] Send failed with status: ${result.status}`);
+        console.error(`[Azure Email] Send failed with status: ${result.status}`, result.error || '');
         return false;
       }
     } catch (error) {
-      console.error('[Azure Email] Failed to send email:', error.message);
+      // Provide more context for common Azure errors
+      const errorMsg = error.message || String(error);
+      console.error('[Azure Email] Failed to send email:', errorMsg);
+      console.error('[Azure Email] Full error details:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
+      if (errorMsg.includes('Denied by the resource provider')) {
+        console.error('[Azure Email] This usually means: 1) Sender domain not verified, 2) MailFrom address not configured, or 3) Quota exceeded. Check Azure Communication Services Email configuration.');
+      }
       return false;
     }
   }

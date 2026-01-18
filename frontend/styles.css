@@ -109,6 +109,16 @@ main {
   font-size: 0.9rem;
 }
 
+.intro .disclaimer {
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--gray-500);
+}
+
+.intro .disclaimer a {
+  color: var(--ubc-blue);
+}
+
 h2 {
   margin-top: 0;
   color: var(--ubc-blue);
@@ -402,7 +412,7 @@ input:focus {
   color: var(--gray-500);
 }
 
-.accordion.open .accordion-header::after {
+.accordion.open > .accordion-header::after {
   content: '-';
 }
 
