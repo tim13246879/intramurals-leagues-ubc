@@ -68,12 +68,14 @@ async function sendDigestEmail(user, gamesWithTeams) {
       hour: 'numeric',
       minute: '2-digit',
     });
-    const opponent = game.team1_name === team.name ? game.team2_name : game.team1_name;
 
     return `
       <div style="background: white; border-radius: 8px; padding: 15px; margin: 10px 0; border-left: 4px solid #002145;">
+        <p style="margin: 0 0 4px 0; color: #002145; font-weight: bold;">
+          ${game.league_name} Intramurals -- ${game.tier_name}
+        </p>
         <p style="margin: 0 0 8px 0; color: #374151;">
-          <strong style="color: #002145;">${team.name}</strong> vs <strong>${opponent}</strong>
+          ${game.team1_name} vs ${game.team2_name}
         </p>
         <p style="margin: 0; color: #6b7280; font-size: 14px;">
           📅 ${dateStr} at ${timeStr} · 📍 ${game.location}
