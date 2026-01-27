@@ -112,7 +112,7 @@ async function sendDigestEmail(user, gamesWithTeams) {
       </div>
       <div style="padding: 15px; background: #e5e7eb; text-align: center;">
         <p style="margin: 0; color: #6b7280; font-size: 12px;">
-          You're receiving this because you subscribed to ${teamsStr} on UBC IM Notify.
+          You're receiving this because you subscribed to ${teamsStr} on <a href="${process.env.API_BASE_URL || 'http://localhost:3000'}" style="color: #002145;">UBC IM Notify</a>.
         </p>
       </div>
     </div>
@@ -416,6 +416,11 @@ async function sendWelcomeEmail(email, name) {
         </p>
         <p style="color: #6b7280; font-size: 14px; margin-top: 30px;">
           Go Thunderbirds! 🏆
+        </p>
+      </div>
+      <div style="padding: 15px; background: #e5e7eb; text-align: center;">
+        <p style="margin: 0; color: #6b7280; font-size: 12px;">
+          Sent from <a href="${process.env.API_BASE_URL || 'http://localhost:3000'}" style="color: #002145;">UBC IM Notify</a>
         </p>
       </div>
     </div>
