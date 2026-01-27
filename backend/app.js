@@ -235,9 +235,10 @@ async function createCalendarEvent(user, game, team) {
 
   console.log('Creating calendar event:', { startDateTime, endDateTime, league: game.league_name, tier: game.tier_name });
 
+  const appUrl = process.env.API_BASE_URL || 'http://localhost:3000';
   const event = {
     summary: `${game.league_name} Intramurals -- ${game.tier_name}`,
-    description: `${game.team1_name} vs ${game.team2_name}`,
+    description: `${game.team1_name} vs ${game.team2_name}\n\nCreated by <a href="${appUrl}">UBC IM Notify</a>`,
     location: game.location,
     start: {
       dateTime: startDateTime,
