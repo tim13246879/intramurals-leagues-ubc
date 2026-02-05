@@ -238,7 +238,7 @@ async function createCalendarEvent(user, game, team) {
   const appUrl = process.env.API_BASE_URL || 'http://localhost:3000';
   const event = {
     summary: `${game.league_name} Intramurals -- ${game.tier_name}`,
-    description: `${game.team1_name} vs ${game.team2_name}\n\nCreated by <a href="${appUrl}">UBC IM Notify</a>`,
+    description: `${game.team1_name} vs ${game.team2_name}\n\nEvent created: ${new Date().toLocaleString('en-US', { timeZone: 'America/Vancouver', dateStyle: 'medium', timeStyle: 'short' })}\nCreated by <a href="${appUrl}">UBC IM Notify</a>`,
     location: game.location,
     start: {
       dateTime: startDateTime,
