@@ -1,15 +1,14 @@
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+import { open } from './database.js';
+import { migrateSecurity } from './security.js';
 
 // Use /data volume in production (Railway), local file in development
-const DB_PATH = process.env.NODE_ENV === 'production'
+const DB_PATH = process.env.DB_PATH || (process.env.NODE_ENV === 'production'
   ? '/data/intramurals.db'
-  : './intramurals.db';
+  : './intramurals.db');
 
 // Open database with promise support
 const db = await open({
-  filename: DB_PATH,
-  driver: sqlite3.Database
+  filename: DB_PATH
 });
 
 console.log('✓ Connected to SQLite database');
@@ -163,6 +162,7 @@ CREATE INDEX IF NOT EXISTS idx_calendar_events_game ON calendar_events(game_id);
 
 // Execute schema
 await db.exec(schema);
+migrateSecurity(db);
 console.log('✓ All tables created successfully');
 
 // Close database

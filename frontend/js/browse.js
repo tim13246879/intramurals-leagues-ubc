@@ -12,7 +12,8 @@ let popupHistory = []; // Stack for popup back navigation
 const PENDING_TEAMS_KEY = 'ubc_intramurals_pending_teams';
 
 // Google OAuth Client ID
-const GOOGLE_CLIENT_ID = '520367712600-vkaoqvgjsef6v65nuc4a6h2r5rikbser.apps.googleusercontent.com';
+let GOOGLE_CLIENT_ID = '';
+let publicRosters = false;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', init);
@@ -21,7 +22,9 @@ async function init() {
   // Check for calendar OAuth callback
   checkCalendarCallback();
 
-  // Initialize Google Sign-In
+  const config = await apiFetch('/config');
+  GOOGLE_CLIENT_ID = config.googleClientId;
+  publicRosters = config.publicRosters;
   initGoogleSignIn();
 
   // Load pending teams from localStorage
@@ -70,7 +73,7 @@ async function handleGoogleSignIn(response) {
   try {
     const result = await authenticateWithGoogle(response.credential);
     currentUser = result.user;
-    saveSession(result.user, result.sessionToken, result.expiresAt);
+    saveSession(result.user, result.expiresAt);
     await loadSubscribedTeams();
     // Sync any pending teams that were added before sign-in
     await syncPendingTeams();
@@ -102,7 +105,9 @@ function prefillSearchWithUserName() {
 function loadPendingTeams() {
   const stored = localStorage.getItem(PENDING_TEAMS_KEY);
   if (stored) {
-    pendingTeams = JSON.parse(stored);
+    try {
+      pendingTeams = Object.fromEntries(Object.entries(JSON.parse(stored)).filter(([id, t]) => /^[1-9][0-9]{0,14}$/.test(id) && t && typeof t.name === 'string'));
+    } catch { pendingTeams = {}; }
   }
 }
 
@@ -410,7 +415,7 @@ async function performSearch(query) {
   try {
     const [teams, players] = await Promise.all([
       searchTeams(query),
-      searchPlayers(query)
+      (isLoggedIn() || publicRosters) ? searchPlayers(query) : Promise.resolve([])
     ]);
 
     if (teams.length === 0 && players.length === 0) {
@@ -449,8 +454,8 @@ async function performSearch(query) {
 
 function renderTeamSearchItem(team) {
   const subscribed = isSubscribed(team.id);
-  const escapedName = escapeHtml(team.name).replace(/'/g, "\\'");
-  const escapedTier = escapeHtml(team.tier_name || '').replace(/'/g, "\\'");
+
+
   return `
     <div class="search-dropdown-item">
       <div class="search-dropdown-item-info">
@@ -458,13 +463,13 @@ function renderTeamSearchItem(team) {
         <div class="search-dropdown-item-subtitle">${escapeHtml(team.tier_name)} - ${escapeHtml(team.league_name)}</div>
       </div>
       <div class="search-dropdown-item-actions">
-        <button class="btn btn-small btn-secondary btn-icon" onclick="showTeamRoster(${team.id}, '${escapedName}'); event.stopPropagation();" title="View roster">
+        <button class="btn btn-small btn-secondary btn-icon" ${actionAttributes('roster', team.id, team.name)} title="View roster">
           👥
         </button>
         <button
           class="btn btn-small ${subscribed ? 'btn-success' : 'btn-primary'}"
           data-team-subscribe="${team.id}"
-          onclick="subscribeToTeam(${team.id}, this, '${escapedName}', '${escapedTier}'); event.stopPropagation();"
+          ${actionAttributes('subscribe', team.id, team.name, team.tier_name || '')}
           title="${subscribed ? 'Click to unsubscribe' : 'Subscribe'}"
         >
           ${subscribed ? '✓' : '+'}
@@ -476,11 +481,11 @@ function renderTeamSearchItem(team) {
 
 function renderPlayerSearchItem(player) {
   const teamCount = player.teams.length;
-  const escapedName = escapeHtml(player.name).replace(/'/g, "\\'");
+
   // Cache teams data for use in popup
   playerTeamsCache[player.id] = player.teams;
   return `
-    <div class="search-dropdown-item search-dropdown-item-clickable" onclick="showPlayerTeamsFromCache(${player.id}, '${escapedName}')">
+    <div class="search-dropdown-item search-dropdown-item-clickable" ${actionAttributes('player', player.id, player.name)}>
       <div class="search-dropdown-item-info">
         <div class="search-dropdown-item-title">${escapeHtml(player.name)}</div>
         <div class="search-dropdown-item-subtitle">${teamCount} team${teamCount !== 1 ? 's' : ''}</div>
@@ -523,13 +528,13 @@ function showPlayerTeamsFromCache(playerId, playerName) {
 
 function showPlayerTeams(playerId, playerName, teams) {
   // Prepare teams data for Add All button
-  const teamsJson = JSON.stringify(teams.map(t => ({id: t.id, name: t.name, tierName: t.tier_name}))).replace(/'/g, "\\'");
-  const escapedPlayerName = escapeHtml(playerName).replace(/'/g, "\\'");
+  const teamArgs = teams.map(t => ({id: t.id, name: t.name, tierName: t.tier_name}));
+
 
   let content = teams.map(team => {
     const subscribed = isSubscribed(team.id);
-    const escapedName = escapeHtml(team.name).replace(/'/g, "\\'");
-    const escapedTier = escapeHtml(team.tier_name || '').replace(/'/g, "\\'");
+
+
     return `
       <div class="popup-item">
         <div>
@@ -537,13 +542,13 @@ function showPlayerTeams(playerId, playerName, teams) {
           <div class="popup-item-subtitle">${escapeHtml(team.tier_name)}${team.league_name ? ' - ' + escapeHtml(team.league_name) : ''}</div>
         </div>
         <div style="display: flex; gap: 0.25rem;">
-          <button class="btn btn-small btn-secondary btn-icon" onclick="showTeamRosterWithHistory(${team.id}, '${escapedName}', ${playerId}, '${escapedPlayerName}')" title="View roster">
+          <button class="btn btn-small btn-secondary btn-icon" ${actionAttributes('rosterHistory', team.id, team.name, playerId, playerName)} title="View roster">
             👥
           </button>
           <button
             class="btn btn-small ${subscribed ? 'btn-success' : 'btn-primary'}"
             data-team-subscribe="${team.id}"
-            onclick="subscribeToTeam(${team.id}, this, '${escapedName}', '${escapedTier}')"
+            ${actionAttributes('subscribe', team.id, team.name, team.tier_name || '')}
             title="${subscribed ? 'Click to unsubscribe' : 'Subscribe'}"
           >
             ${subscribed ? '✓' : '+'}
@@ -558,7 +563,7 @@ function showPlayerTeams(playerId, playerName, teams) {
     const allSubscribed = teams.every(t => isSubscribed(t.id));
     content += `
       <div class="popup-actions">
-        <button class="btn ${allSubscribed ? 'btn-success' : 'btn-primary'}" onclick='subscribeToAllTeams(${teamsJson}, this)'>
+        <button class="btn ${allSubscribed ? 'btn-success' : 'btn-primary'}" ${actionAttributes('subscribeAll', teamArgs)}>
           ${allSubscribed ? '✓ Added All' : 'Add All Teams'}
         </button>
       </div>
@@ -578,6 +583,11 @@ function showTeamRosterWithHistory(teamId, teamName, playerId, playerName) {
 }
 
 async function showTeamRoster(teamId, teamName, clearHistory = true) {
+  if (!isLoggedIn() && !publicRosters) {
+    showToast('Sign in to view player rosters.');
+    openMyTeamsOverlay();
+    return;
+  }
   showPopup(`${teamName} Roster`, '<div class="search-dropdown-loading"><div class="spinner"></div></div>', clearHistory);
 
   try {
@@ -642,7 +652,7 @@ async function loadLeagues() {
 function renderLeagueAccordion(league) {
   return `
     <div class="accordion" data-league-id="${league.id}">
-      <div class="accordion-header" onclick="toggleLeague(${league.id})">
+      <div class="accordion-header" ${actionAttributes('league', league.id)}>
         <span>${escapeHtml(league.name)}</span>
       </div>
       <div class="accordion-content" id="league-${league.id}-content">
@@ -681,7 +691,7 @@ async function loadLeagueTiers(leagueId) {
 
     content.innerHTML = data.tiers.map(tier => `
       <div class="accordion" data-tier-id="${tier.id}">
-        <div class="accordion-header" onclick="toggleTier(${tier.id}, event)">
+        <div class="accordion-header" ${actionAttributes('tier', tier.id)}>
           <span>${escapeHtml(tier.name)} <span class="badge badge-secondary">${tier.teams.length} teams</span></span>
         </div>
         <div class="accordion-content" id="tier-${tier.id}-content">
@@ -706,24 +716,23 @@ function renderTeamsList(teams, tierName = '') {
     return '<div class="empty text-small">No teams in this tier.</div>';
   }
 
-  const escapedTier = escapeHtml(tierName).replace(/'/g, "\\'");
 
   return `
     <ul class="list">
       ${teams.map(team => {
         const subscribed = isSubscribed(team.id);
-        const escapedName = escapeHtml(team.name).replace(/'/g, "\\'");
+
         return `
           <li class="list-item">
             <span class="list-item-title">${escapeHtml(team.name)}</span>
             <div style="display: flex; gap: 0.25rem;">
-              <button class="btn btn-small btn-secondary btn-icon" onclick="showTeamRoster(${team.id}, '${escapedName}'); event.stopPropagation();" title="View roster">
+              <button class="btn btn-small btn-secondary btn-icon" ${actionAttributes('roster', team.id, team.name)} title="View roster">
                 👥
               </button>
               <button
                 class="btn btn-small ${subscribed ? 'btn-success' : 'btn-primary'}"
                 data-team-subscribe="${team.id}"
-                onclick="subscribeToTeam(${team.id}, this, '${escapedName}', '${escapedTier}'); event.stopPropagation();"
+                ${actionAttributes('subscribe', team.id, team.name, team.tier_name || tierName || '')}
                 title="${subscribed ? 'Click to unsubscribe' : 'Subscribe'}"
               >
                 ${subscribed ? '✓' : '+'}
@@ -773,7 +782,7 @@ function renderMyTeamsContent() {
               <div class="popup-item-name">${escapeHtml(team.name)}</div>
               ${team.tierName ? `<div class="popup-item-subtitle">${escapeHtml(team.tierName)}</div>` : ''}
             </div>
-            <button class="btn btn-small btn-danger" onclick="removePendingTeam(${teamId})">×</button>
+            <button class="btn btn-small btn-danger" ${actionAttributes('removePending', Number(teamId))}>×</button>
           </div>
         `;
       }
@@ -863,7 +872,7 @@ function renderMyTeamsLoaded(data) {
           <div class="popup-item-name">${escapeHtml(sub.team_name)}</div>
           <div class="popup-item-subtitle">${escapeHtml(sub.tier_name)} - ${escapeHtml(sub.league_name)}</div>
         </div>
-        <button class="btn btn-small btn-danger" onclick="handleMyTeamsUnsubscribe(${sub.id}, ${sub.team_id}, '${escapeHtml(sub.team_name).replace(/'/g, "\\'")}')">
+        <button class="btn btn-small btn-danger" ${actionAttributes('unsubscribe', sub.id, sub.team_id, sub.team_name)}>
           ×
         </button>
       </div>
@@ -873,7 +882,8 @@ function renderMyTeamsLoaded(data) {
   container.innerHTML = html;
 }
 
-function handleSignOut() {
+async function handleSignOut() {
+  await apiFetch('/auth/logout', { method: 'POST' });
   if (typeof google !== 'undefined' && google.accounts) {
     google.accounts.id.disableAutoSelect();
   }
@@ -949,20 +959,20 @@ function renderSettingsLoaded(data) {
   container.innerHTML = `
     <div style="padding: 1rem; border-bottom: 1px solid var(--gray-200);">
       <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;">
-        ${user.picture ? `<img src="${user.picture}" alt="" style="width: 40px; height: 40px; border-radius: 50%;">` : ''}
+        ${user.picture ? `<img src="${escapeHtml(safePicture(user.picture))}" alt="" style="width: 40px; height: 40px; border-radius: 50%;">` : ''}
         <div>
           <div style="font-weight: 500;">${escapeHtml(user.name || 'User')}</div>
           <div class="text-muted text-small">${escapeHtml(user.email)}</div>
         </div>
       </div>
-      <button class="btn btn-secondary" onclick="handleSignOut(); closeSettingsOverlay();">Sign Out</button>
+      <button class="btn btn-secondary" data-action="signout">Sign Out</button>
     </div>
     <div style="padding: 1rem;">
       <p class="text-muted text-small" style="margin: 0 0 1rem 0;">Notifications</p>
       <div style="display: flex; flex-direction: column; gap: 1rem;">
         <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
           <input type="checkbox" ${prefMap['email'] === 1 ? 'checked' : ''}
-            onchange="handlePrefChange('email', this.checked)"
+            data-change="email"
             style="margin-top: 4px;">
           <div>
             <div>Email Notifications ✉️</div>
@@ -974,13 +984,13 @@ function renderSettingsLoaded(data) {
         ${calendarConnected ? `
           <label style="display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
             <input type="checkbox" ${calendarEnabled ? 'checked' : ''}
-              onchange="handleCalendarToggle(this.checked)"
+              data-change="calendar"
               style="margin-top: 4px;">
             <div>
               <div>Google Calendar 📅</div>
               <div class="text-muted text-small">Automatically add games to your Google Calendar</div>
               <button class="btn btn-small btn-secondary" style="margin-top: 0.5rem;"
-                onclick="event.preventDefault(); handleDisconnectCalendar()">
+                data-action="disconnect">
                 Disconnect Calendar
               </button>
             </div>
@@ -991,7 +1001,7 @@ function renderSettingsLoaded(data) {
             <div>
               <div>Google Calendar 📅</div>
               <div class="text-muted text-small">Connect your Google Calendar to automatically add games</div>
-              <button class="btn btn-primary" style="margin-top: 0.5rem;" onclick="handleConnectCalendar()">
+              <button class="btn btn-primary" style="margin-top: 0.5rem;" data-action="connect">
                 Connect Google Calendar
               </button>
             </div>
@@ -1001,7 +1011,7 @@ function renderSettingsLoaded(data) {
     </div>
     <div style="padding: 1rem; border-top: 1px solid var(--gray-200);">
       <p class="text-muted text-small" style="margin: 0 0 0.75rem 0;">Danger Zone</p>
-      <button class="btn btn-danger" onclick="confirmDeleteAccount()">Delete Account</button>
+      <button class="btn btn-danger" data-action="deleteAccount">Delete Account</button>
     </div>
   `;
 }
@@ -1090,9 +1100,51 @@ async function handleCalendarToggle(enabled) {
 
 // ============ Helpers ============
 
-function escapeHtml(text) {
-  if (typeof text !== 'string') return text;
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
+
+function safePicture(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname.endsWith('.googleusercontent.com') ? url.href : '';
+  } catch { return ''; }
+}
+
+function actionAttributes(action, ...args) {
+  return `data-action="${action}" data-args="${escapeHtml(JSON.stringify(args))}"`;
+}
+
+// Delegation also works for dynamically rendered and restored popup content.
+const actions = {
+  settings: () => openSettingsOverlay(), myTeams: () => openMyTeamsOverlay(),
+  closePopup: (args, element, event) => closePopup(event),
+  closeMyTeams: (args, element, event) => closeMyTeamsOverlay(event),
+  closeSettings: (args, element, event) => closeSettingsOverlay(event),
+  closePopupButton: () => closePopup(), closeMyTeamsButton: () => closeMyTeamsOverlay(),
+  closeSettingsButton: () => closeSettingsOverlay(), stop: () => {},
+  roster: args => showTeamRoster(...args), player: args => showPlayerTeamsFromCache(...args),
+  rosterHistory: args => showTeamRosterWithHistory(...args),
+  subscribe: ([id, name, tier], element) => subscribeToTeam(id, element, name, tier),
+  subscribeAll: ([teams], element) => subscribeToAllTeams(teams, element),
+  league: ([id]) => toggleLeague(id), tier: ([id], element, event) => toggleTier(id, event),
+  removePending: ([id]) => removePendingTeam(id), unsubscribe: args => handleMyTeamsUnsubscribe(...args),
+  signout: async () => { await handleSignOut(); closeSettingsOverlay(); },
+  connect: () => handleConnectCalendar(), disconnect: () => handleDisconnectCalendar(),
+  deleteAccount: () => confirmDeleteAccount(),
+};
+document.addEventListener('click', async event => {
+  const element = event.target.closest('[data-action]');
+  if (!element || !Object.hasOwn(actions, element.dataset.action) || element.dataset.action === 'stop') return;
+  if (element.classList.contains('popup-overlay') && event.target !== element) return;
+  event.preventDefault();
+  try {
+    // Overlay handlers need the matched element, not the document listener's currentTarget.
+    const actionEvent = { target: event.target, currentTarget: element, stopPropagation: () => event.stopPropagation() };
+    await actions[element.dataset.action](JSON.parse(element.dataset.args || '[]'), element, actionEvent);
+  } catch { showToast('Action failed. Please try again.', true); }
+});
+document.addEventListener('change', event => {
+  if (event.target.dataset.change === 'email') handlePrefChange('email', event.target.checked);
+  if (event.target.dataset.change === 'calendar') handleCalendarToggle(event.target.checked);
+});

@@ -5,7 +5,7 @@
 const API_BASE = '/api/v1';
 
 /**
- * Fetch wrapper with error handling and session token
+ * Same-origin cookie API client with CSRF protection
  */
 async function apiFetch(endpoint, options = {}) {
   const headers = {
@@ -13,15 +13,10 @@ async function apiFetch(endpoint, options = {}) {
     ...options.headers,
   };
 
-  // Add session token if user is logged in
-  const session = getStoredSession();
-  if (session && session.token) {
-    headers['Authorization'] = `Bearer ${session.token}`;
-  }
-
   const response = await fetch(`${API_BASE}${endpoint}`, {
-    headers,
     ...options,
+    credentials: 'same-origin',
+    headers: { ...headers, 'X-CSRF-Protection': '1' },
   });
 
   if (!response.ok) {
@@ -187,25 +182,26 @@ const SESSION_KEY = 'ubc_intramurals_session';
 const USER_KEY = 'ubc_intramurals_user';
 
 /**
- * Save session and user info to localStorage
+ * Save non-secret UI state; the credential is an HttpOnly cookie
  * @param {Object} user - User object from API
- * @param {string} sessionToken - Server session token
  * @param {string} expiresAt - Session expiration timestamp
  */
-function saveSession(user, sessionToken, expiresAt) {
-  localStorage.setItem(SESSION_KEY, JSON.stringify({ token: sessionToken, expiresAt }));
+function saveSession(user, expiresAt) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ expiresAt }));
   localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 /**
  * Get stored session
- * @returns {{token, expiresAt}|null}
+ * @returns {{expiresAt}|null}
  */
 function getStoredSession() {
   const stored = localStorage.getItem(SESSION_KEY);
   if (!stored) return null;
 
-  const session = JSON.parse(stored);
+  let session;
+  try { session = JSON.parse(stored); } catch { clearStoredSession(); return null; }
+  if (session.token) { clearStoredSession(); return null; }
   // Check if session is expired
   if (new Date(session.expiresAt) <= new Date()) {
     clearStoredSession();
@@ -221,7 +217,7 @@ function getStoredSession() {
 function getStoredUser() {
   if (!getStoredSession()) return null;
   const stored = localStorage.getItem(USER_KEY);
-  return stored ? JSON.parse(stored) : null;
+  try { return stored ? JSON.parse(stored) : null; } catch { clearStoredSession(); return null; }
 }
 
 /**

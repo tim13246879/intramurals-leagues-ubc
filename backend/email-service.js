@@ -29,6 +29,8 @@ class SmtpEmailService {
       host: process.env.SMTP_HOST || 'smtp.gmail.com',
       port: parseInt(process.env.SMTP_PORT || '465'),
       secure: true,
+      disableFileAccess: true,
+      disableUrlAccess: true,
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
@@ -57,10 +59,10 @@ class SmtpEmailService {
         subject,
         html,
       });
-      console.log(`[SMTP] Email sent to ${to}`);
+      console.log('Email sent');
       return true;
     } catch (error) {
-      console.error('[SMTP] Failed to send email:', error.message);
+      console.error('[SMTP] Email delivery failed');
       return false;
     }
   }
@@ -100,25 +102,19 @@ class AzureEmailService {
 
     try {
       // Start the send operation
-      const poller = await this.client.beginSend(message);
+      const poller = await this.client.beginSend(message, { abortSignal: AbortSignal.timeout(30000) });
       // Wait for completion (with timeout)
-      const result = await poller.pollUntilDone();
+      const result = await poller.pollUntilDone({ abortSignal: AbortSignal.timeout(30000) });
 
       if (result.status === 'Succeeded') {
-        console.log(`[Azure Email] Email sent to ${to}`);
+        console.log('Email sent');
         return true;
       } else {
-        console.error(`[Azure Email] Send failed with status: ${result.status}`, result.error || '');
+        console.error('[Azure Email] Delivery failed');
         return false;
       }
     } catch (error) {
-      // Provide more context for common Azure errors
-      const errorMsg = error.message || String(error);
-      console.error('[Azure Email] Failed to send email:', errorMsg);
-      console.error('[Azure Email] Full error details:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
-      if (errorMsg.includes('Denied by the resource provider')) {
-        console.error('[Azure Email] This usually means: 1) Sender domain not verified, 2) MailFrom address not configured, or 3) Quota exceeded. Check Azure Communication Services Email configuration.');
-      }
+      console.error('[Azure Email] Delivery failed');
       return false;
     }
   }

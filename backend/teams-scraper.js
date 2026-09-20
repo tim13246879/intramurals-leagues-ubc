@@ -1,16 +1,11 @@
-import axios from 'axios';
+import { fetchPortal } from './scraper-http.js';
 import * as cheerio from 'cheerio';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
-import https from 'https';
-
-// HTTPS agent that ignores certificate errors (needed for Railway environment)
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+import { open } from './database.js';
 
 // Use /data volume in production (Railway), local file in development
-const DB_PATH = process.env.NODE_ENV === 'production'
+const DB_PATH = process.env.DB_PATH || (process.env.NODE_ENV === 'production'
   ? '/data/intramurals.db'
-  : './intramurals.db';
+  : './intramurals.db');
 
 /**
  * Scrapes UBC Intramurals standings pages to extract:
@@ -73,12 +68,7 @@ async function scrapeAndStoreLeague(db, activityId, leagueName, year, term) {
     console.log(`\n📥 Fetching: ${leagueName}`);
     console.log(`   URL: ${portalUrl}`);
 
-    const response = await axios.get(portalUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      httpsAgent
-    });
+    const response = await fetchPortal(portalUrl);
 
     const $ = cheerio.load(response.data);
 
@@ -196,8 +186,7 @@ async function scrapeAndStoreLeague(db, activityId, leagueName, year, term) {
  */
 async function scrapeAllLeagues() {
   const db = await open({
-    filename: DB_PATH,
-    driver: sqlite3.Database
+    filename: DB_PATH
   });
 
   // Enable foreign keys
@@ -254,8 +243,7 @@ async function scrapeAllLeagues() {
  */
 async function scrapeLeague(identifier) {
   const db = await open({
-    filename: DB_PATH,
-    driver: sqlite3.Database
+    filename: DB_PATH
   });
 
   await db.exec('PRAGMA foreign_keys = ON');

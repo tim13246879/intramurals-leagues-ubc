@@ -3,16 +3,18 @@
  * Runs both scrapers at midnight Pacific time
  */
 
+import 'dotenv/config';
 import cron from 'node-cron';
+import { open } from './database.js';
+import { enqueueJob } from './jobs.js';
+import crypto from 'node:crypto';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const PORT = process.env.PORT || 3000;
-const API_BASE = process.env.API_BASE_URL || `http://localhost:${PORT}`;
-const INTERNAL_SECRET = process.env.INTERNAL_SECRET || 'dev-secret-change-in-production';
+const DB_PATH = process.env.DB_PATH || (process.env.NODE_ENV === 'production' ? '/data/intramurals.db' : './intramurals.db');
 
 /**
  * Run a scraper script and return promise with result
@@ -24,22 +26,29 @@ function runScraper(scriptName) {
 
     const proc = spawn('node', [scriptPath], {
       cwd: __dirname,
-      env: process.env,
+      env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV || 'development', DB_PATH, ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}) },
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
+    const timeout = setTimeout(() => proc.kill('SIGKILL'), 10 * 60000);
+    let outputBytes = 0;
     let stdout = '';
     let stderr = '';
 
     proc.stdout.on('data', (data) => {
+      outputBytes += data.length;
+      if (outputBytes > 4 * 1024 * 1024) { proc.kill('SIGKILL'); return; }
       stdout += data.toString();
     });
 
     proc.stderr.on('data', (data) => {
+      outputBytes += data.length;
+      if (outputBytes > 4 * 1024 * 1024) { proc.kill('SIGKILL'); return; }
       stderr += data.toString();
     });
 
     proc.on('close', (code) => {
+      clearTimeout(timeout);
       if (code === 0) {
         console.log(`[Scheduler] ${scriptName} completed successfully`);
         resolve({ success: true, stdout, stderr });
@@ -51,6 +60,7 @@ function runScraper(scriptName) {
     });
 
     proc.on('error', (err) => {
+      clearTimeout(timeout);
       console.error(`[Scheduler] Failed to start ${scriptName}:`, err);
       reject(err);
     });
@@ -58,31 +68,19 @@ function runScraper(scriptName) {
 }
 
 /**
- * Trigger notifications for new games via internal API
+ * Persist notification jobs for new games without exposing an HTTP credential
  */
 async function triggerNotifications(gameIds) {
-  if (!gameIds || gameIds.length === 0) {
-    console.log('[Scheduler] No new games to notify');
-    return;
-  }
-
-  console.log(`[Scheduler] Triggering notifications for ${gameIds.length} new games`);
-
+  if (!gameIds?.length) return;
+  const db = await open({ filename: DB_PATH });
   try {
-    const response = await fetch(`${API_BASE}/api/internal/notify-games`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Internal-Secret': INTERNAL_SECRET
-      },
-      body: JSON.stringify({ gameIds })
-    });
-
-    const result = await response.json();
-    console.log(`[Scheduler] Notifications triggered: ${result.notified} games notified`);
-  } catch (error) {
-    console.error('[Scheduler] Failed to trigger notifications:', error.message);
-  }
+    const ids = [...new Set(gameIds)].sort((a,b) => a-b);
+    for (let i=0; i<ids.length; i+=100) {
+      const batch = ids.slice(i,i+100);
+      const key = crypto.createHash('sha256').update(JSON.stringify(batch)).digest('hex');
+      enqueueJob(db, 'notify', {gameIds: batch}, `notify:${key}`);
+    }
+  } finally { db.close(); }
 }
 
 /**
@@ -107,31 +105,49 @@ function parseNewGameIds(stdout) {
 /**
  * Run the full scraping pipeline
  */
+let pipelineRunning = false;
 async function runScrapingPipeline() {
-  console.log(`[Scheduler] Starting scraping pipeline at ${new Date().toISOString()}`);
-
+  if (pipelineRunning) return false;
+  pipelineRunning = true;
+  let lockDb;
+  const owner = crypto.randomUUID();
   try {
-    // Step 1: Scrape teams (leagues, tiers, teams)
-    const teamsResult = await runScraper('teams-scraper.js');
-    if (!teamsResult.success) {
-      console.error('[Scheduler] Teams scraper failed, skipping games scraper');
-      return;
-    }
+    lockDb = await open({ filename: DB_PATH });
+    lockDb.exec('CREATE TABLE IF NOT EXISTS scraper_lease (id INTEGER PRIMARY KEY, owner TEXT, expires_at INTEGER)');
+    const now = Date.now();
+    const claim = lockDb.run(`INSERT INTO scraper_lease VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner, expires_at=excluded.expires_at WHERE scraper_lease.expires_at < ?`, [owner, now+25*60000, now]);
+    if (!claim.changes) return false;
+    console.log(`[Scheduler] Starting scraping pipeline at ${new Date().toISOString()}`);
 
-    // Step 2: Scrape games (schedules, rosters)
-    const gamesResult = await runScraper('games-scraper.js');
-
-    // Step 3: Trigger notifications for any new games
-    if (gamesResult.success) {
-      const newGameIds = parseNewGameIds(gamesResult.stdout);
-      if (newGameIds.length > 0) {
-        await triggerNotifications(newGameIds);
+    try {
+      // Step 1: Scrape teams (leagues, tiers, teams)
+      const teamsResult = await runScraper('teams-scraper.js');
+      if (!teamsResult.success) {
+        console.error('[Scheduler] Teams scraper failed, skipping games scraper');
+        return;
       }
-    }
 
-    console.log(`[Scheduler] Pipeline completed at ${new Date().toISOString()}`);
-  } catch (error) {
-    console.error('[Scheduler] Pipeline error:', error);
+      // Step 2: Scrape games (schedules, rosters)
+      const gamesResult = await runScraper('games-scraper.js');
+
+      // Step 3: Trigger notifications for any new games
+      if (gamesResult.success) {
+        const newGameIds = parseNewGameIds(gamesResult.stdout);
+        if (newGameIds.length > 0) {
+          await triggerNotifications(newGameIds);
+        }
+      }
+
+      console.log(`[Scheduler] Pipeline completed at ${new Date().toISOString()}`);
+    } catch (error) {
+      console.error('[Scheduler] Pipeline failed');
+    }
+  } finally {
+    if (lockDb) {
+      lockDb.run('DELETE FROM scraper_lease WHERE owner=?', [owner]);
+      lockDb.close();
+    }
+    pipelineRunning = false;
   }
 }
 

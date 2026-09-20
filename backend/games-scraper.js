@@ -1,22 +1,18 @@
-import axios from 'axios';
+import { getCurrentYearAndTerm } from './teams-scraper.js';
+import { fetchPortal } from './scraper-http.js';
 import * as cheerio from 'cheerio';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
-import https from 'https';
-
-// HTTPS agent that ignores certificate errors (needed for Railway environment)
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+import { open } from './database.js';
 
 // Use /data volume in production (Railway), local file in development
-const DB_PATH = process.env.NODE_ENV === 'production'
+const DB_PATH = process.env.DB_PATH || (process.env.NODE_ENV === 'production'
   ? '/data/intramurals.db'
-  : './intramurals.db';
+  : './intramurals.db');
 
 /**
  * Scrapes team pages to extract:
  * - Games (schedule, results, scores)
  * - Players (roster)
- * 
+ *
  * Stores them in the database
  */
 
@@ -26,75 +22,71 @@ const DB_PATH = process.env.NODE_ENV === 'production'
 async function scrapeTeamPage(teamUrl, teamId, tierId) {
   try {
     console.log(`\n📥 Fetching team page: ${teamUrl}`);
-    
-    const response = await axios.get(teamUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      },
-      httpsAgent
-    });
-    
+
+    const response = await fetchPortal(teamUrl);
+
     const $ = cheerio.load(response.data);
-    
+
     // Extract team name from the page (usually in an h1 or h2)
     const teamName = $('h1, h2').first().text().trim().split('(')[0].trim();
-    
+
     console.log(`🏀 Team: ${teamName}`);
-    
+
     const games = [];
     const players = [];
-    
+    let rosterFound = false;
+
     // Extract games from the schedule table
     // Look for table with headers: Date, Time, Location, Match-up, Result, Total Score, Information
     $('table').each((tableIdx, table) => {
       const $table = $(table);
       const headers = [];
-      
+
       // Get headers
       $table.find('thead tr th, tbody tr:first-child th').each((idx, th) => {
         headers.push($(th).text().trim());
       });
-      
+
       // Check if this is the schedule table (has "Match-up" or "Date" column)
-      const isScheduleTable = headers.some(h => 
-        h.toLowerCase().includes('match-up') || 
+      const isScheduleTable = headers.some(h =>
+        h.toLowerCase().includes('match-up') ||
         h.toLowerCase().includes('date') ||
         h.toLowerCase().includes('matchup')
       );
-      
+
       if (!isScheduleTable) return;
-      
+
       // Find date, time, location, match-up, result, score columns
       const dateIdx = headers.findIndex(h => h.toLowerCase().includes('date'));
       const timeIdx = headers.findIndex(h => h.toLowerCase().includes('time'));
       const locationIdx = headers.findIndex(h => h.toLowerCase().includes('location'));
-      const matchupIdx = headers.findIndex(h => 
-        h.toLowerCase().includes('match-up') || 
+      const matchupIdx = headers.findIndex(h =>
+        h.toLowerCase().includes('match-up') ||
         h.toLowerCase().includes('matchup')
       );
       const resultIdx = headers.findIndex(h => h.toLowerCase().includes('result'));
-      const scoreIdx = headers.findIndex(h => 
-        h.toLowerCase().includes('score') || 
+      const scoreIdx = headers.findIndex(h =>
+        h.toLowerCase().includes('score') ||
         h.toLowerCase().includes('total')
       );
-      
+
       // Extract games from table rows
       $table.find('tbody tr').each((rowIdx, row) => {
         const $row = $(row);
         const cells = $row.find('td');
-        
+
         if (cells.length === 0) return; // Skip header rows
-        
+
         const date = dateIdx >= 0 ? cells.eq(dateIdx).text().trim() : '';
         const time = timeIdx >= 0 ? cells.eq(timeIdx).text().trim() : '';
         const location = locationIdx >= 0 ? cells.eq(locationIdx).text().trim() : '';
         const matchup = matchupIdx >= 0 ? cells.eq(matchupIdx).text().trim() : '';
         const result = resultIdx >= 0 ? cells.eq(resultIdx).text().trim() : '';
         const score = scoreIdx >= 0 ? cells.eq(scoreIdx).text().trim() : '';
-        
+
         // Skip if no date or matchup
         if (!date || !matchup) return;
-        
+
         // Parse date and time into datetime first
         // Date format: MM/DD/YYYY (e.g., 09/21/2025)
         // Time format: 12-hour format like 4:30PM or 4:30 PM
@@ -103,7 +95,7 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
           try {
             const dateStr = date.trim();
             const timeStr = time.trim();
-            
+
             // Parse date (MM/DD/YYYY format)
             let parsedDate;
             if (dateStr.includes('/')) {
@@ -120,7 +112,7 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
             } else {
               parsedDate = new Date(dateStr);
             }
-            
+
             // Parse time (12-hour format: 4:30PM, 4:30 PM, 12:00AM, etc.)
             let hours, minutes;
             // Match time with optional space before AM/PM (handles both "4:30PM" and "4:30 PM")
@@ -129,7 +121,7 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
               hours = parseInt(timeMatch[1]);
               minutes = parseInt(timeMatch[2]);
               const period = timeMatch[3].toUpperCase();
-              
+
               // Convert to 24-hour format
               if (period === 'PM' && hours !== 12) {
                 hours += 12;
@@ -144,7 +136,7 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
                 minutes = parseInt(timeMatch24[2]);
               }
             }
-            
+
             if (parsedDate && !isNaN(parsedDate.getTime()) && hours !== undefined) {
               // Store as local time string (Pacific time) without timezone indicator
               // Format: YYYY-MM-DDTHH:MM:SS (no Z suffix)
@@ -157,23 +149,23 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
             console.warn(`⚠️  Could not parse datetime: ${date} ${time}`, e.message);
           }
         }
-        
+
         // Parse matchup to extract team names
         // Format can be: "Team A vs. Team B", "Team A _vs._ Team B", or HTML with bold/links
         // Get text content from the matchup cell (handles HTML)
         const matchupText = $row.find('td').eq(matchupIdx).text().trim();
-        
+
         // Try to match various formats
         const matchupMatch = matchupText.match(/(.+?)\s+(?:vs\.?|_vs\.?_)\s+(.+)/i);
-        
+
         let team1Name, team2Name;
-        
+
         if (!matchupMatch) {
           // Try alternative: look for bold tags or links
           const $matchupCell = $row.find('td').eq(matchupIdx);
           const team1El = $matchupCell.find('strong').first();
           const team2El = $matchupCell.find('strong').last();
-          
+
           if (team1El.length && team2El.length) {
             team1Name = team1El.text().trim();
             team2Name = team2El.text().trim();
@@ -184,13 +176,13 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
           team1Name = matchupMatch[1].trim();
           team2Name = matchupMatch[2].trim();
         }
-        
+
         // Clean up team names (remove any remaining markdown/HTML artifacts)
         team1Name = team1Name.replace(/\*\*/g, '').replace(/<[^>]*>/g, '').trim();
         team2Name = team2Name.replace(/\*\*/g, '').replace(/<[^>]*>/g, '').trim();
-        
+
         if (!team1Name || !team2Name) return; // Skip if we don't have both team names
-        
+
         games.push({
           datetime: datetime || `${date} ${time}`,
           location: location || '',
@@ -201,34 +193,35 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
         });
       });
     });
-    
+
     // Extract players from the roster table
     // Look for table with "Player" column
     $('table').each((tableIdx, table) => {
       const $table = $(table);
       const headers = [];
-      
+
       // Get headers
       $table.find('thead tr th, tbody tr:first-child th').each((idx, th) => {
         headers.push($(th).text().trim());
       });
-      
+
       // Check if this is the roster table (has "Player" column)
-      const isRosterTable = headers.some(h => 
+      const isRosterTable = headers.some(h =>
         h.toLowerCase().includes('player')
       );
-      
+
       if (!isRosterTable) return;
-      
+      rosterFound = true;
+
       const playerIdx = headers.findIndex(h => h.toLowerCase().includes('player'));
-      
+
       // Extract players from table rows
       $table.find('tbody tr').each((rowIdx, row) => {
         const $row = $(row);
         const cells = $row.find('td');
-        
+
         if (cells.length === 0) return; // Skip header rows
-        
+
         let playerName = playerIdx >= 0 ? cells.eq(playerIdx).text().trim() : '';
         // Normalize whitespace (collapse multiple spaces to single space)
         playerName = playerName.replace(/\s+/g, ' ');
@@ -238,12 +231,12 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
         }
       });
     });
-    
+
     console.log(`  📊 Found ${games.length} games`);
     console.log(`  👥 Found ${players.length} players`);
-    
-    return { games, players, teamName };
-    
+
+    return { games, players, teamName, rosterFound };
+
   } catch (error) {
     console.error(`❌ Error scraping team page ${teamUrl}:`, error.message);
     if (error.response) {
@@ -257,38 +250,26 @@ async function scrapeTeamPage(teamUrl, teamId, tierId) {
  * Store games and players in the database
  * Returns { newGames: number, existingGames: number, newPlayers: number }
  */
-async function storeTeamData(db, teamId, tierId, games, players) {
+async function storeTeamData(db, teamId, tierId, games, players, rosterFound = false) {
   const stats = { newGames: 0, existingGames: 0, newPlayers: 0 };
 
-  // Store players
-  for (let playerName of players) {
-    if (!playerName) continue;
-
-    // Normalize whitespace (collapse multiple spaces, trim)
-    playerName = playerName.replace(/\s+/g, ' ').trim();
-
-    // Insert or get player
-    let playerResult = await db.get('SELECT id FROM players WHERE name = ?', [playerName]);
-
-    if (!playerResult) {
-      const insertResult = await db.run('INSERT INTO players (name) VALUES (?)', [playerName]);
-      const playerId = insertResult.lastID;
-      stats.newPlayers++;
-
-      // Link player to team
-      await db.run(
-        'INSERT OR IGNORE INTO team_players (team_id, player_id) VALUES (?, ?)',
-        [teamId, playerId]
-      );
-    } else {
-      const playerId = playerResult.id;
-
-      // Link player to team
-      await db.run(
-        'INSERT OR IGNORE INTO team_players (team_id, player_id) VALUES (?, ?)',
-        [teamId, playerId]
-      );
-    }
+  // Replace only a successfully parsed roster. A changed/failed upstream page
+  // must not erase valid data. All writes execute synchronously in one transaction.
+  if (rosterFound) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.run('DELETE FROM team_players WHERE team_id=?', [teamId]);
+      for (const rawName of players.slice(0, 500)) {
+        const name = rawName.replace(/\s+/g, ' ').trim();
+        if (!name || name.length > 200) continue;
+        const result = db.run('INSERT OR IGNORE INTO players(name) VALUES(?)', [name]);
+        stats.newPlayers += result.changes;
+        const player = db.get('SELECT id FROM players WHERE name=?', [name]);
+        db.run('INSERT OR IGNORE INTO team_players(team_id,player_id,last_seen_at) VALUES(?,?,?)', [teamId, player.id, Date.now()]);
+      }
+      db.run('DELETE FROM players WHERE NOT EXISTS (SELECT 1 FROM team_players WHERE player_id=players.id)');
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
 
   // Store games
@@ -352,8 +333,7 @@ async function storeTeamData(db, teamId, tierId, games, players) {
  */
 async function scrapeAllTeams(concurrency = 5) {
   const db = await open({
-    filename: DB_PATH,
-    driver: sqlite3.Database
+    filename: DB_PATH
   });
 
   const totals = {
@@ -366,11 +346,14 @@ async function scrapeAllTeams(concurrency = 5) {
   };
 
   try {
+    db.run('DELETE FROM team_players WHERE last_seen_at < ?', [Date.now()-180*86400000]);
+    db.run('DELETE FROM players WHERE NOT EXISTS (SELECT 1 FROM team_players WHERE player_id=players.id)');
     // Get all teams with their URLs and tier IDs
     const teams = await db.all(
       `SELECT t.id, t.name, t.url, t.tier_id
-       FROM teams t
-       WHERE t.url IS NOT NULL AND t.url != ''`
+       FROM teams t JOIN tiers ti ON ti.id=t.tier_id JOIN leagues l ON l.id=ti.league_id
+       WHERE t.url IS NOT NULL AND t.url != '' AND l.year=? AND l.term=?`,
+      [getCurrentYearAndTerm().year, getCurrentYearAndTerm().term]
     );
 
     console.log(`\n📋 UBC Intramurals Games Scraper`);
@@ -383,21 +366,21 @@ async function scrapeAllTeams(concurrency = 5) {
 
       const results = await Promise.allSettled(
         batch.map(async (team) => {
-          const { games, players } = await scrapeTeamPage(
+          const { games, players, rosterFound } = await scrapeTeamPage(
             team.url,
             team.id,
             team.tier_id
           );
-          return { team, games, players };
+          return { team, games, players, rosterFound };
         })
       );
 
       // Process results and store in DB (sequential to avoid DB locks)
       for (const result of results) {
         if (result.status === 'fulfilled') {
-          const { team, games, players } = result.value;
+          const { team, games, players, rosterFound } = result.value;
           try {
-            const stats = await storeTeamData(db, team.id, team.tier_id, games, players);
+            const stats = await storeTeamData(db, team.id, team.tier_id, games, players, rosterFound);
             totals.teamsScraped++;
             totals.newGames += stats.newGames;
             totals.existingGames += stats.existingGames;
@@ -448,34 +431,33 @@ async function scrapeAllTeams(concurrency = 5) {
  */
 async function scrapeTeam(teamUrl) {
   const db = await open({
-    filename: DB_PATH,
-    driver: sqlite3.Database
+    filename: DB_PATH
   });
-  
+
   try {
     // Find team in database
     const team = await db.get(
-      `SELECT t.id, t.name, t.url, t.tier_id 
-       FROM teams t 
+      `SELECT t.id, t.name, t.url, t.tier_id
+       FROM teams t
        WHERE t.url = ?`,
       [teamUrl]
     );
-    
+
     if (!team) {
       console.error(`❌ Team not found in database: ${teamUrl}`);
       return;
     }
-    
-    const { games, players } = await scrapeTeamPage(
+
+    const { games, players, rosterFound } = await scrapeTeamPage(
       team.url,
       team.id,
       team.tier_id
     );
-    
-    await storeTeamData(db, team.id, team.tier_id, games, players);
-    
+
+    await storeTeamData(db, team.id, team.tier_id, games, players, rosterFound);
+
     console.log(`✅ Stored data for ${team.name}`);
-    
+
   } finally {
     await db.close();
   }
@@ -484,7 +466,7 @@ async function scrapeTeam(teamUrl) {
 // Run the scraper if executed directly
 if (import.meta.url === `file://${process.argv[1]}` || import.meta.url.endsWith(process.argv[1])) {
   const teamUrl = process.argv[2];
-  
+
   if (teamUrl) {
     scrapeTeam(teamUrl)
       .then(() => console.log('\n✅ Scraping complete!'))

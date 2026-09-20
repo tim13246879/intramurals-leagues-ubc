@@ -1,34 +1,42 @@
 import 'dotenv/config';
 import express from 'express';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+import { open } from './database.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { OAuth2Client } from 'google-auth-library';
 import crypto from 'crypto';
 import { google } from 'googleapis';
 import { sendEmail, isEmailConfigured } from './email-service.js';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
+import { production, appOrigin, cookieName, cookieOptions, sessionToken, hash, encryptToken, decryptToken, internalAuth, csrfProtection, escapeHtml, validId, migrateSecurity } from './security.js';
+import { createJobQueue } from './jobs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Use /data volume in production (Railway), local file in development
-const DB_PATH = process.env.NODE_ENV === 'production'
+const DB_PATH = process.env.DB_PATH || (process.env.NODE_ENV === 'production'
   ? '/data/intramurals.db'
-  : './intramurals.db';
+  : './intramurals.db');
 
 // Google OAuth configuration
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:3000/api/v1/auth/calendar/callback';
+if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) throw new Error('Google OAuth configuration is required');
+if (new URL(GOOGLE_REDIRECT_URI).origin !== appOrigin) throw new Error('GOOGLE_REDIRECT_URI must match APP_ORIGIN');
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+googleClient.transporter.defaults = { ...googleClient.transporter.defaults, timeout: 15000, retry: false };
 
 // Create OAuth2 client for Calendar API
 function getCalendarOAuth2Client() {
-  return new google.auth.OAuth2(
+  const client = new google.auth.OAuth2(
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI
   );
+  client.transporter.defaults = { ...client.transporter.defaults, timeout: 15000, retry: false };
+  return client;
 }
 
 // Get game duration in minutes based on league/sport type
@@ -47,7 +55,7 @@ function getGameDurationMinutes(leagueName) {
 async function sendDigestEmail(user, gamesWithTeams) {
   if (!isEmailConfigured()) {
     console.log('Email not configured, skipping digest email');
-    return;
+    return false;
   }
 
   const firstName = user.name ? user.name.split(' ')[0] : 'there';
@@ -72,13 +80,13 @@ async function sendDigestEmail(user, gamesWithTeams) {
     return `
       <div style="background: white; border-radius: 8px; padding: 15px; margin: 10px 0; border-left: 4px solid #002145;">
         <p style="margin: 0 0 4px 0; color: #002145; font-weight: bold;">
-          ${game.league_name} Intramurals -- ${game.tier_name}
+          ${escapeHtml(game.league_name)} Intramurals -- ${escapeHtml(game.tier_name)}
         </p>
         <p style="margin: 0 0 8px 0; color: #374151;">
-          ${game.team1_name} vs ${game.team2_name}
+          ${escapeHtml(game.team1_name)} vs ${escapeHtml(game.team2_name)}
         </p>
         <p style="margin: 0; color: #6b7280; font-size: 14px;">
-          📅 ${dateStr} at ${timeStr} · 📍 ${game.location}
+          📅 ${dateStr} at ${timeStr} · 📍 ${escapeHtml(game.location)}
         </p>
       </div>
     `;
@@ -96,7 +104,7 @@ async function sendDigestEmail(user, gamesWithTeams) {
         <h1 style="margin: 0; font-size: 24px;">UBC IM Notify</h1>
       </div>
       <div style="padding: 30px; background: #f9fafb;">
-        <h2 style="color: #002145; margin-top: 0;">Hey ${firstName}!</h2>
+        <h2 style="color: #002145; margin-top: 0;">Hey ${escapeHtml(firstName)}!</h2>
         <p style="color: #374151; line-height: 1.6;">
           ${gameCount > 1
             ? `<strong>${gameCount} new games</strong> have been scheduled for your teams!`
@@ -112,7 +120,7 @@ async function sendDigestEmail(user, gamesWithTeams) {
       </div>
       <div style="padding: 15px; background: #e5e7eb; text-align: center;">
         <p style="margin: 0; color: #6b7280; font-size: 12px;">
-          You're receiving this because you subscribed to ${teamsStr} on <a href="${process.env.API_BASE_URL || 'http://localhost:3000'}" style="color: #002145;">UBC IM Notify</a>.
+          You're receiving this because you subscribed to ${escapeHtml(teamsStr)} on <a href="${escapeHtml(appOrigin)}" style="color: #002145;">UBC IM Notify</a>.
         </p>
       </div>
     </div>
@@ -124,81 +132,19 @@ async function sendDigestEmail(user, gamesWithTeams) {
     html: htmlContent,
   });
 
-  if (success) {
-    console.log(`Digest email sent to ${user.email} (${gameCount} games)`);
-  }
-}
-
-// Notify all subscribers when a new game is added
-async function notifySubscribersOfNewGame(game) {
-  // Get both teams involved
-  const team1 = await db.get('SELECT id, name FROM teams WHERE id = ?', [game.team1_id]);
-  const team2 = await db.get('SELECT id, name FROM teams WHERE id = ?', [game.team2_id]);
-
-  // Find all users subscribed to either team with notifications enabled
-  const subscribers = await db.all(`
-    SELECT DISTINCT u.id, u.email, u.name, u.calendar_refresh_token, s.team_id, np.channel, np.enabled
-    FROM users u
-    JOIN subscriptions s ON u.id = s.user_id
-    JOIN notification_preferences np ON u.id = np.user_id
-    WHERE s.team_id IN (?, ?)
-      AND np.enabled = 1
-  `, [game.team1_id, game.team2_id]);
-
-  // Group by user to handle multiple channels
-  const userMap = new Map();
-  for (const sub of subscribers) {
-    if (!userMap.has(sub.id)) {
-      userMap.set(sub.id, {
-        user: sub,
-        team_id: sub.team_id,
-        channels: new Set()
-      });
-    }
-    userMap.get(sub.id).channels.add(sub.channel);
-  }
-
-  console.log(`Found ${userMap.size} subscriber(s) to notify for game ${game.id}`);
-
-  for (const [userId, data] of userMap) {
-    const team = data.team_id === team1.id ? team1 : team2;
-
-    // Send email notification (uses digest format even for single game)
-    if (data.channels.has('email')) {
-      await sendDigestEmail(data.user, [{ game, team }]);
-    }
-
-    // Add to calendar
-    if (data.channels.has('calendar') && data.user.calendar_refresh_token) {
-      // Check if already added
-      const existing = await db.get(
-        'SELECT id FROM calendar_events WHERE user_id = ? AND game_id = ?',
-        [userId, game.id]
-      );
-
-      if (!existing) {
-        const eventId = await createCalendarEvent(data.user, game, team);
-        if (eventId) {
-          await db.run(
-            'INSERT INTO calendar_events (user_id, game_id, calendar_event_id) VALUES (?, ?, ?)',
-            [userId, game.id, eventId]
-          );
-        }
-      }
-    }
-  }
+  return success;
 }
 
 // Create a calendar event for a game
 async function createCalendarEvent(user, game, team) {
   if (!user.calendar_refresh_token) {
-    console.log(`User ${user.email} has no calendar refresh token`);
+    console.log('Operation completed');
     return null;
   }
 
   const oauth2Client = getCalendarOAuth2Client();
   oauth2Client.setCredentials({
-    refresh_token: user.calendar_refresh_token
+    refresh_token: decryptToken(user.calendar_refresh_token)
   });
 
   // Refresh access token before making API calls
@@ -206,13 +152,12 @@ async function createCalendarEvent(user, game, team) {
     const { credentials } = await oauth2Client.refreshAccessToken();
     oauth2Client.setCredentials(credentials);
   } catch (refreshError) {
-    console.error(`Failed to refresh token for ${user.email}:`, refreshError.message);
+    console.error('Operation failed');
     return null;
   }
 
   const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
-  const opponent = game.team1_name === team.name ? game.team2_name : game.team1_name;
   const durationMinutes = getGameDurationMinutes(game.league_name);
 
   // game.datetime is stored as Pacific time without timezone (e.g., "2025-09-21T21:30:00")
@@ -235,10 +180,12 @@ async function createCalendarEvent(user, game, team) {
 
   console.log('Creating calendar event:', { startDateTime, endDateTime, league: game.league_name, tier: game.tier_name });
 
-  const appUrl = process.env.API_BASE_URL || 'http://localhost:3000';
+  const appUrl = appOrigin;
+  const eventId = hash(`calendar:${user.id}:${game.id}:${user.calendar_refresh_token}`);
   const event = {
+    id: eventId,
     summary: `${game.league_name} Intramurals -- ${game.tier_name}`,
-    description: `${game.team1_name} vs ${game.team2_name}\n\nEvent created: ${new Date().toLocaleString('en-US', { timeZone: 'America/Vancouver', dateStyle: 'medium', timeStyle: 'short' })}\nCreated by <a href="${appUrl}">UBC IM Notify</a>`,
+    description: `${escapeHtml(game.team1_name)} vs ${escapeHtml(game.team2_name)}\n\nEvent created: ${new Date().toLocaleString('en-US', { timeZone: 'America/Vancouver', dateStyle: 'medium', timeStyle: 'short' })}\nCreated by <a href="${appUrl}">UBC IM Notify</a>`,
     location: game.location,
     start: {
       dateTime: startDateTime,
@@ -263,17 +210,18 @@ async function createCalendarEvent(user, game, team) {
       resource: event,
     });
 
-    console.log(`Calendar event created for ${user.email}: ${result.data.id}`);
+    console.log('Operation completed');
     return result.data.id;
   } catch (error) {
-    console.error(`Failed to create calendar event for ${user.email}:`, error.message);
+    if (error.code === 409) return eventId;
+    console.error('Calendar event creation failed');
 
     // Handle token expiration/revocation
-    if (error.code === 401 || error.code === 403) {
-      console.log(`Calendar token invalid for ${user.email}, clearing...`);
+    if (error.code === 401) {
+      console.log('Operation completed');
       await db.run(
-        'UPDATE users SET calendar_refresh_token = NULL WHERE id = ?',
-        [user.id]
+        'UPDATE users SET calendar_refresh_token = NULL WHERE id = ? AND calendar_refresh_token = ?',
+        [user.id, user.calendar_refresh_token]
       );
     }
 
@@ -289,14 +237,14 @@ async function calendarEventExists(user, calendarEventId) {
 
   const oauth2Client = getCalendarOAuth2Client();
   oauth2Client.setCredentials({
-    refresh_token: user.calendar_refresh_token
+    refresh_token: decryptToken(user.calendar_refresh_token)
   });
 
   try {
     const { credentials } = await oauth2Client.refreshAccessToken();
     oauth2Client.setCredentials(credentials);
   } catch (refreshError) {
-    console.error(`Failed to refresh token for ${user.email}:`, refreshError.message);
+    console.error('Operation failed');
     return false;
   }
 
@@ -314,7 +262,7 @@ async function calendarEventExists(user, calendarEventId) {
       return false;
     }
     // For other errors, assume it exists to avoid re-creating
-    console.error(`Error checking calendar event ${calendarEventId}:`, error.message);
+    console.error('Operation failed');
     return true;
   }
 }
@@ -326,7 +274,8 @@ async function addTeamGamesToCalendar(userId, teamId) {
     [userId]
   );
 
-  if (!user?.calendar_refresh_token) {
+  const pref = await db.get("SELECT enabled FROM notification_preferences WHERE user_id=? AND channel='calendar'", [userId]);
+  if (!user?.calendar_refresh_token || pref?.enabled !== 1) {
     return { added: 0, skipped: 0 };
   }
 
@@ -345,12 +294,13 @@ async function addTeamGamesToCalendar(userId, teamId) {
     JOIN leagues l ON ti.league_id = l.id
     WHERE (g.team1_id = ? OR g.team2_id = ?)
       AND g.datetime > datetime('now')
-    ORDER BY g.datetime
+    ORDER BY g.datetime LIMIT 100
   `, [teamId, teamId]);
 
   let added = 0, skipped = 0;
 
   for (const game of games) {
+    if (!(await db.get('SELECT 1 FROM subscriptions WHERE user_id=? AND team_id=?', [userId, teamId]))) break;
     // Check if we have a record of this event
     const existing = await db.get(
       'SELECT id, calendar_event_id FROM calendar_events WHERE user_id = ? AND game_id = ?',
@@ -372,7 +322,7 @@ async function addTeamGamesToCalendar(userId, teamId) {
 
     if (eventId) {
       await db.run(
-        'INSERT INTO calendar_events (user_id, game_id, calendar_event_id) VALUES (?, ?, ?)',
+        'INSERT OR IGNORE INTO calendar_events (user_id, game_id, calendar_event_id) VALUES (?, ?, ?)',
         [userId, game.id, eventId]
       );
       added++;
@@ -399,7 +349,7 @@ async function sendWelcomeEmail(email, name) {
         <h1 style="margin: 0; font-size: 24px;">UBC IM Notify</h1>
       </div>
       <div style="padding: 30px; background: #f9fafb;">
-        <h2 style="color: #002145; margin-top: 0;">Hey ${firstName}!</h2>
+        <h2 style="color: #002145; margin-top: 0;">Hey ${escapeHtml(firstName)}!</h2>
         <p style="color: #374151; line-height: 1.6;">
           Welcome to UBC IM Notify! You're all set to receive notifications for your intramural games.
         </p>
@@ -420,7 +370,7 @@ async function sendWelcomeEmail(email, name) {
       </div>
       <div style="padding: 15px; background: #e5e7eb; text-align: center;">
         <p style="margin: 0; color: #6b7280; font-size: 12px;">
-          Sent from <a href="${process.env.API_BASE_URL || 'http://localhost:3000'}" style="color: #002145;">UBC IM Notify</a>
+          Sent from <a href="${escapeHtml(appOrigin)}" style="color: #002145;">UBC IM Notify</a>
         </p>
       </div>
     </div>
@@ -433,23 +383,40 @@ async function sendWelcomeEmail(email, name) {
   });
 
   if (success) {
-    console.log(`Welcome email sent to ${email}`);
+    console.log('Operation completed');
   }
 }
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Middleware
-app.use(express.json());
-
-// COOP header for Google Sign-In popup support
-app.use((req, res, next) => {
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
-  next();
-});
-
-// Serve frontend static files
+// Security headers precede static files, including a CSP without inline scripts.
+app.disable('x-powered-by');
+if (process.env.TRUST_PROXY_HOPS) {
+  const hops = Number(process.env.TRUST_PROXY_HOPS);
+  if (!Number.isInteger(hops) || hops < 0 || hops > 5) throw new Error('Invalid TRUST_PROXY_HOPS');
+  app.set('trust proxy', hops);
+}
+app.use(helmet({
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+  contentSecurityPolicy: { directives: {
+    defaultSrc: ["'self'"], scriptSrc: ["'self'", 'https://accounts.google.com/gsi/client'],
+    scriptSrcAttr: ["'none'"], styleSrc: ["'self'", "'unsafe-inline'", 'https://accounts.google.com/gsi/style'],
+    imgSrc: ["'self'", 'data:', 'https://*.googleusercontent.com'],
+    connectSrc: ["'self'", 'https://accounts.google.com/gsi/'],
+    frameSrc: ['https://accounts.google.com/gsi/'], frameAncestors: ["'none'"],
+    objectSrc: ["'none'"], baseUri: ["'none'"], formAction: ["'self'"],
+    upgradeInsecureRequests: production ? [] : null,
+  } },
+  strictTransportSecurity: production ? { maxAge: 31536000 } : false,
+  referrerPolicy: { policy: 'no-referrer' },
+}));
+app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+app.use('/api', rateLimit({ windowMs: 60000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false }));
+app.use('/api/internal', internalAuth, rateLimit({ windowMs: 60000, limit: 5 }));
+app.use('/api/v1', csrfProtection);
+app.use(express.json({ limit: '16kb', strict: true }));
+app.use('/api/v1/auth/google', rateLimit({ windowMs: 15 * 60000, limit: 20 }));
 app.use(express.static(path.join(__dirname, '../frontend')));
 
 // Database connection
@@ -457,10 +424,9 @@ let db;
 
 async function initDb() {
   db = await open({
-    filename: DB_PATH,
-    driver: sqlite3.Database
+    filename: DB_PATH
   });
-  await db.exec('PRAGMA foreign_keys = ON');
+  migrateSecurity(db);
   console.log('✓ Connected to database');
 }
 
@@ -484,34 +450,31 @@ async function createSession(userId) {
 
   await db.run(
     'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
-    [userId, token, expiresAt.toISOString()]
+    [userId, hash(token), expiresAt.getTime()]
   );
 
   return { token, expiresAt: expiresAt.toISOString() };
 }
 
-// Middleware to verify session token from Authorization header
+// Verify the HttpOnly cookie against a stored hash and numeric expiry.
 async function authenticateSession(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Authorization required' });
-  }
-
-  const token = authHeader.substring(7);
+  const token = sessionToken(req);
+  if (!token) return res.status(401).json({ error: 'Sign in required' });
   try {
     // Find valid session
     const session = await db.get(
       `SELECT s.*, u.id as user_id, u.google_id, u.email, u.name, u.picture
        FROM sessions s
        JOIN users u ON s.user_id = u.id
-       WHERE s.token = ? AND s.expires_at > datetime('now')`,
-      [token]
+       WHERE s.token = ? AND CAST(s.expires_at AS INTEGER) > ?`,
+      [hash(token), Date.now()]
     );
 
     if (!session) {
       return res.status(401).json({ error: 'Invalid or expired session' });
     }
 
+    req.sessionHash = hash(token);
     req.user = {
       id: session.user_id,
       googleId: session.google_id,
@@ -531,7 +494,6 @@ async function findOrCreateUserByGoogle(googleUser) {
 
   // Try to find existing user
   let user = await db.get('SELECT * FROM users WHERE google_id = ?', [googleId]);
-  let isNewUser = false;
 
   if (!user) {
     // Create new user
@@ -540,8 +502,7 @@ async function findOrCreateUserByGoogle(googleUser) {
       [googleId, email, name, picture]
     );
     user = { id: result.lastID, google_id: googleId, email, name, picture };
-    isNewUser = true;
-    console.log(`New user created: ${email} (id: ${user.id})`);
+    console.log('Operation completed');
 
     // Set default notification preferences (email enabled, calendar disabled)
     await db.run(
@@ -554,7 +515,7 @@ async function findOrCreateUserByGoogle(googleUser) {
     );
 
     // Send welcome email (async, don't wait)
-    console.log(`Sending welcome email to ${email}...`);
+    console.log('Operation completed');
     sendWelcomeEmail(email, name);
   } else {
     // Update email/name/picture if changed
@@ -566,6 +527,12 @@ async function findOrCreateUserByGoogle(googleUser) {
 
   return user;
 }
+
+const publicRosters = process.env.PUBLIC_ROSTERS === 'true';
+app.get('/api/v1/config', (req, res) => res.json({ googleClientId: GOOGLE_CLIENT_ID, publicRosters }));
+const rosterAccess = (req, res, next) => publicRosters ? next() : authenticateSession(req, res, next);
+const userWorkLimit = rateLimit({ windowMs: 60000, limit: 15, keyGenerator: req => String(req.user.id) });
+app.param('id', (req, res, next, id) => validId(id) ? next() : res.status(400).json({ error: 'Invalid ID' }));
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -582,7 +549,7 @@ app.get('/api/v1/leagues', async (req, res) => {
     `);
     res.json(leagues);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
@@ -620,7 +587,7 @@ app.get('/api/v1/leagues/:id/teams', async (req, res) => {
       tiers
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
@@ -668,12 +635,12 @@ app.get('/api/v1/teams/:id/games', async (req, res) => {
       games
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
 // GET /api/v1/teams/:id/players - Get team roster
-app.get('/api/v1/teams/:id/players', async (req, res) => {
+app.get('/api/v1/teams/:id/players', rosterAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -694,7 +661,7 @@ app.get('/api/v1/teams/:id/players', async (req, res) => {
 
     res.json({ team, players });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
@@ -703,8 +670,8 @@ app.get('/api/v1/search/teams', async (req, res) => {
   try {
     const { q } = req.query;
 
-    if (!q || q.length < 2) {
-      return res.status(400).json({ error: 'Query must be at least 2 characters' });
+    if (typeof q !== 'string' || q.trim().length < 2 || q.length > 100 || /[%_]/.test(q)) {
+      return res.status(400).json({ error: 'Query must be 2–100 characters without wildcard characters' });
     }
 
     const teams = await db.all(`
@@ -719,17 +686,17 @@ app.get('/api/v1/search/teams', async (req, res) => {
 
     res.json(teams);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
 // GET /api/v1/search/players?q= - Search players, returns their teams
-app.get('/api/v1/search/players', async (req, res) => {
+app.get('/api/v1/search/players', rosterAccess, async (req, res) => {
   try {
     const { q } = req.query;
 
-    if (!q || q.length < 2) {
-      return res.status(400).json({ error: 'Query must be at least 2 characters' });
+    if (typeof q !== 'string' || q.trim().length < 2 || q.length > 100 || /[%_]/.test(q)) {
+      return res.status(400).json({ error: 'Query must be 2–100 characters without wildcard characters' });
     }
 
     // Find players matching query
@@ -756,7 +723,7 @@ app.get('/api/v1/search/players', async (req, res) => {
 
     res.json(players);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
@@ -764,8 +731,8 @@ app.get('/api/v1/search/players', async (req, res) => {
 
 // POST /api/v1/auth/google - Authenticate with Google ID token
 app.post('/api/v1/auth/google', async (req, res) => {
-  const { idToken } = req.body;
-  if (!idToken) {
+  const { idToken } = req.body || {};
+  if (typeof idToken !== 'string' || idToken.length > 10000) {
     return res.status(400).json({ error: 'idToken required' });
   }
 
@@ -775,6 +742,7 @@ app.post('/api/v1/auth/google', async (req, res) => {
       audience: GOOGLE_CLIENT_ID,
     });
     const payload = ticket.getPayload();
+    if (!payload?.sub || !payload.email || payload.email_verified !== true) throw new Error('Verified Google email required');
     const googleUser = {
       googleId: payload.sub,
       email: payload.email,
@@ -784,7 +752,10 @@ app.post('/api/v1/auth/google', async (req, res) => {
 
     const user = await findOrCreateUserByGoogle(googleUser);
 
-    // Create a 30-day session
+    // Replace this browser's previous session; discard expired rows.
+    const oldToken = sessionToken(req);
+    if (oldToken) await db.run('DELETE FROM sessions WHERE token=?', [hash(oldToken)]);
+    await db.run('DELETE FROM sessions WHERE CAST(expires_at AS INTEGER) <= ?', [Date.now()]);
     const session = await createSession(user.id);
 
     // Get user preferences
@@ -793,6 +764,7 @@ app.post('/api/v1/auth/google', async (req, res) => {
       [user.id]
     );
 
+    res.cookie(cookieName, session.token, { ...cookieOptions, maxAge: SESSION_DURATION_DAYS * 86400000 });
     res.json({
       success: true,
       user: {
@@ -802,31 +774,45 @@ app.post('/api/v1/auth/google', async (req, res) => {
         name: user.name,
         picture: user.picture,
       },
-      sessionToken: session.token,
       expiresAt: session.expiresAt,
       preferences,
     });
   } catch (error) {
-    console.error('Google auth error:', error.message);
+    console.error('Operation failed');
     res.status(401).json({ error: 'Invalid Google token' });
   }
 });
 
 // POST /api/v1/auth/logout - Invalidate session
-app.post('/api/v1/auth/logout', authenticateSession, async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader.substring(7);
-
-  await db.run('DELETE FROM sessions WHERE token = ?', [token]);
+app.post('/api/v1/auth/logout', async (req, res) => {
+  const token = sessionToken(req);
+  if (token) {
+    await db.run('DELETE FROM sessions WHERE token=?', [hash(token)]);
+    await db.run('DELETE FROM oauth_states WHERE session_hash=?', [hash(token)]);
+  }
+  res.clearCookie(cookieName, cookieOptions);
   res.json({ success: true });
 });
+
+async function revokeCalendar(userId) {
+  const user = await db.get('SELECT calendar_refresh_token FROM users WHERE id=?', [userId]);
+  if (user?.calendar_refresh_token) {
+    try { await getCalendarOAuth2Client().revokeToken(decryptToken(user.calendar_refresh_token)); }
+    catch (error) {
+      // Google returns invalid_token when a grant has already been revoked.
+      if (!(error.response?.status === 400 && error.response?.data?.error === 'invalid_token')) {
+        const failure = new Error('Unable to revoke Calendar access. Please retry.'); failure.status = 502; throw failure;
+      }
+    }
+  }
+}
 
 // DELETE /api/v1/account - Delete user account and all related data
 app.delete('/api/v1/account', authenticateSession, async (req, res) => {
   const userId = req.user.id;
-  const userEmail = req.user.email;
 
   try {
+    await revokeCalendar(userId);
     // Foreign keys with ON DELETE CASCADE will handle related tables
     const result = await db.run('DELETE FROM users WHERE id = ?', [userId]);
 
@@ -834,103 +820,66 @@ app.delete('/api/v1/account', authenticateSession, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    console.log(`Account deleted: ${userEmail} (id: ${userId})`);
+    res.clearCookie(cookieName, cookieOptions);
+    console.log('Account deleted');
     res.json({ success: true, message: 'Account deleted successfully' });
   } catch (error) {
-    console.error('Account deletion error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Account deletion failed');
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
 // ============ CALENDAR OAUTH ENDPOINTS ============
 
 // GET /api/v1/auth/calendar - Generate OAuth URL for calendar consent
-app.get('/api/v1/auth/calendar', authenticateSession, async (req, res) => {
-  if (!GOOGLE_CLIENT_SECRET) {
-    return res.status(500).json({ error: 'Calendar integration not configured' });
+app.get('/api/v1/auth/calendar', authenticateSession, userWorkLimit, async (req, res) => {
+  if (req.get('x-csrf-protection') !== '1') return res.status(403).json({ error: 'Invalid request' });
+  if ((await db.get('SELECT calendar_refresh_token FROM users WHERE id=?', [req.user.id]))?.calendar_refresh_token) {
+    return res.status(409).json({ error: 'Disconnect the current Calendar before connecting another' });
   }
-
-  const oauth2Client = getCalendarOAuth2Client();
-
-  // Generate state token to prevent CSRF
-  const state = crypto.randomBytes(16).toString('hex');
-
-  // Store state in a temporary way - we'll use a simple approach with user ID encoded
-  const stateData = Buffer.from(JSON.stringify({
-    userId: req.user.id,
-    state: state,
-    timestamp: Date.now()
-  })).toString('base64');
-
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    scope: ['https://www.googleapis.com/auth/calendar.events'],
-    state: stateData,
-    prompt: 'consent',
-    include_granted_scopes: true
+  const state = crypto.randomBytes(32).toString('base64url');
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  await db.run('DELETE FROM oauth_states WHERE expires_at <= ? OR session_hash=?', [Date.now(), req.sessionHash]);
+  await db.run('INSERT INTO oauth_states VALUES(?,?,?,?,?)', [hash(state), req.user.id, req.sessionHash, verifier, Date.now()+300000]);
+  const authUrl = getCalendarOAuth2Client().generateAuthUrl({
+    access_type: 'offline', scope: ['https://www.googleapis.com/auth/calendar.events'],
+    state, prompt: 'consent',
+    code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256',
   });
-
   res.json({ authUrl });
 });
 
-// GET /api/v1/auth/calendar/callback - Handle OAuth callback from Google
-app.get('/api/v1/auth/calendar/callback', async (req, res) => {
+app.get('/api/v1/auth/calendar/callback', authenticateSession, async (req, res) => {
   const { code, state, error } = req.query;
-
-  if (error) {
-    return res.redirect('/?calendar_error=' + encodeURIComponent(error));
-  }
-
-  if (!code || !state) {
-    return res.redirect('/?calendar_error=missing_params');
-  }
-
+  if (typeof state !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(state)) return res.redirect('/?calendar_error=invalid_state');
+  // Atomic consumption, bound to the authenticated browser session and user.
+  const pending = await db.get(`DELETE FROM oauth_states WHERE state_hash=? AND session_hash=? AND user_id=? AND expires_at>? RETURNING *`,
+    [hash(state), req.sessionHash, req.user.id, Date.now()]);
+  if (!pending) return res.redirect('/?calendar_error=invalid_state');
+  if (error || typeof code !== 'string' || code.length > 4096) return res.redirect('/?calendar_error=consent_failed');
   try {
-    // Decode and verify state
-    const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
-
-    // Check state is not too old (5 minutes max)
-    if (Date.now() - stateData.timestamp > 5 * 60 * 1000) {
-      return res.redirect('/?calendar_error=state_expired');
+    const client = getCalendarOAuth2Client();
+    const { tokens } = await client.getToken({ code, codeVerifier: pending.verifier });
+    if (!tokens.refresh_token) throw new Error('Missing offline grant');
+    const result = await db.run('UPDATE users SET calendar_refresh_token=? WHERE id=? AND calendar_refresh_token IS NULL', [encryptToken(tokens.refresh_token), req.user.id]);
+    if (!result.changes) return res.redirect('/?calendar_error=already_connected');
+    await db.run(`INSERT INTO notification_preferences(user_id,channel,enabled) VALUES(?,'calendar',1)
+      ON CONFLICT(user_id,channel) DO UPDATE SET enabled=1`, [req.user.id]);
+    await db.run('DELETE FROM calendar_events WHERE user_id=?', [req.user.id]);
+    for (const sub of await db.all('SELECT team_id FROM subscriptions WHERE user_id=?', [req.user.id])) {
+      jobs.enqueue('calendar', { userId: req.user.id, teamId: sub.team_id }, `calendar:${req.user.id}:${sub.team_id}`);
     }
-
-    const userId = stateData.userId;
-
-    // Verify user exists
-    const user = await db.get('SELECT id FROM users WHERE id = ?', [userId]);
-    if (!user) {
-      return res.redirect('/?calendar_error=user_not_found');
-    }
-
-    // Exchange code for tokens
-    const oauth2Client = getCalendarOAuth2Client();
-    const { tokens } = await oauth2Client.getToken(code);
-
-    // Store refresh token in database
-    await db.run(
-      'UPDATE users SET calendar_refresh_token = ? WHERE id = ?',
-      [tokens.refresh_token, userId]
-    );
-
-    // Enable calendar preference
-    await db.run(
-      `INSERT INTO notification_preferences (user_id, channel, enabled)
-       VALUES (?, 'calendar', 1)
-       ON CONFLICT(user_id, channel) DO UPDATE SET enabled = 1`,
-      [userId]
-    );
-
-    console.log(`Calendar connected for user ${userId}`);
     res.redirect('/?calendar_connected=true');
-  } catch (err) {
-    console.error('Calendar OAuth error:', err);
-    res.redirect('/?calendar_error=token_exchange_failed');
+  } catch {
+    console.error('Calendar connection failed');
+    res.redirect('/?calendar_error=connection_failed');
   }
 });
 
 // POST /api/v1/auth/calendar/disconnect - Revoke calendar access
-app.post('/api/v1/auth/calendar/disconnect', authenticateSession, async (req, res) => {
+app.post('/api/v1/auth/calendar/disconnect', authenticateSession, userWorkLimit, async (req, res) => {
   try {
+    await revokeCalendar(req.user.id);
     // Clear refresh token
     await db.run(
       'UPDATE users SET calendar_refresh_token = NULL WHERE id = ?',
@@ -953,18 +902,18 @@ app.post('/api/v1/auth/calendar/disconnect', authenticateSession, async (req, re
     console.log(`Calendar disconnected for user ${req.user.id}`);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
 // ============ SUBSCRIPTION ENDPOINTS (requires session auth) ============
 
 // POST /api/v1/subscribe - Subscribe to a team
-app.post('/api/v1/subscribe', authenticateSession, async (req, res) => {
+app.post('/api/v1/subscribe', authenticateSession, userWorkLimit, async (req, res) => {
   try {
-    const { teamId } = req.body;
+    const { teamId } = req.body || {};
 
-    if (!teamId) {
+    if (!validId(teamId)) {
       return res.status(400).json({ error: 'teamId required' });
     }
 
@@ -974,22 +923,19 @@ app.post('/api/v1/subscribe', authenticateSession, async (req, res) => {
       return res.status(404).json({ error: 'Team not found' });
     }
 
-    // Add subscription (ignore if already exists)
-    await db.run(
+    const existingSubscription = db.get('SELECT id FROM subscriptions WHERE user_id=? AND team_id=?', [req.user.id, teamId]);
+    if (!existingSubscription && db.get('SELECT count(*) n FROM subscriptions WHERE user_id=?', [req.user.id]).n >= 100) {
+      return res.status(400).json({ error: 'Subscription limit reached' });
+    }
+    // Avoid redoing external work for an existing subscription.
+    const inserted = await db.run(
       'INSERT OR IGNORE INTO subscriptions (user_id, team_id) VALUES (?, ?)',
       [req.user.id, teamId]
     );
 
-    // Check if calendar is enabled and add existing games
-    const calendarPref = await db.get(
-      `SELECT enabled FROM notification_preferences
-       WHERE user_id = ? AND channel = 'calendar'`,
-      [req.user.id]
-    );
-
-    let calendarResult = null;
-    if (calendarPref?.enabled === 1) {
-      calendarResult = await addTeamGamesToCalendar(req.user.id, teamId);
+    if (inserted.changes) {
+      try { jobs.enqueue('calendar', { userId: req.user.id, teamId: Number(teamId) }, `calendar:${req.user.id}:${teamId}`); }
+      catch (error) { db.run('DELETE FROM subscriptions WHERE id=?', [inserted.lastID]); throw error; }
     }
 
     res.json({
@@ -997,10 +943,10 @@ app.post('/api/v1/subscribe', authenticateSession, async (req, res) => {
       message: `Subscribed to ${team.name}`,
       userId: req.user.id,
       teamId: team.id,
-      calendarEventsAdded: calendarResult?.added || 0
+      calendarSyncQueued: !!inserted.changes
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
@@ -1039,7 +985,7 @@ app.get('/api/v1/subscriptions', authenticateSession, async (req, res) => {
       calendarConnected: !!user?.calendar_refresh_token
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
@@ -1060,14 +1006,14 @@ app.delete('/api/v1/subscriptions/:id', authenticateSession, async (req, res) =>
 
     res.json({ success: true, message: 'Unsubscribed' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
 // PUT /api/v1/notifications/preferences - Update notification settings (auth required)
 app.put('/api/v1/notifications/preferences', authenticateSession, async (req, res) => {
   try {
-    const { channel, enabled } = req.body;
+    const { channel, enabled } = req.body || {};
 
     if (!channel || !['email', 'calendar'].includes(channel)) {
       return res.status(400).json({ error: 'channel must be email or calendar' });
@@ -1085,82 +1031,24 @@ app.put('/api/v1/notifications/preferences', authenticateSession, async (req, re
 
     res.json({ success: true, channel, enabled });
   } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ============ TEST ENDPOINTS (for development only) ============
-
-// POST /api/v1/test/add-game - Mock add a game and notify subscribers
-app.post('/api/v1/test/add-game', async (req, res) => {
-  try {
-    const { team1_id, team2_id, datetime, location } = req.body;
-
-    // Get tier from team1
-    const team1 = await db.get('SELECT tier_id FROM teams WHERE id = ?', [team1_id]);
-    if (!team1) {
-      return res.status(404).json({ error: 'Team 1 not found' });
-    }
-
-    // Check for duplicate game (same teams, same datetime)
-    const existing = await db.get(
-      `SELECT id FROM games
-       WHERE ((team1_id = ? AND team2_id = ?) OR (team1_id = ? AND team2_id = ?))
-         AND datetime = ?`,
-      [team1_id, team2_id, team2_id, team1_id, datetime]
-    );
-    if (existing) {
-      return res.status(409).json({ error: 'Game already exists', gameId: existing.id });
-    }
-
-    // Insert the game
-    const result = await db.run(
-      'INSERT INTO games (team1_id, team2_id, tier_id, datetime, location) VALUES (?, ?, ?, ?, ?)',
-      [team1_id, team2_id, team1.tier_id, datetime, location]
-    );
-
-    // Get full game info for notifications
-    const game = await db.get(`
-      SELECT g.id, g.datetime, g.location,
-             t1.id as team1_id, t1.name as team1_name,
-             t2.id as team2_id, t2.name as team2_name,
-             ti.name as tier_name, l.name as league_name
-      FROM games g
-      JOIN teams t1 ON g.team1_id = t1.id
-      JOIN teams t2 ON g.team2_id = t2.id
-      JOIN tiers ti ON g.tier_id = ti.id
-      JOIN leagues l ON ti.league_id = l.id
-      WHERE g.id = ?
-    `, [result.lastID]);
-
-    console.log(`New game added: ${game.team1_name} vs ${game.team2_name} on ${game.datetime}`);
-
-    // Notify subscribers
-    await notifySubscribersOfNewGame(game);
-
-    res.json({ success: true, game });
-  } catch (error) {
-    console.error('Error adding test game:', error);
-    res.status(500).json({ error: error.message });
+    res.status(error.status || 500).json({ error: error.status === 502 ? 'Unable to revoke Calendar access. Please retry.' : 'Request failed' });
   }
 });
 
 // ==================== INTERNAL ENDPOINTS ====================
 
 // Internal endpoint to trigger notifications for new games (called by scheduler)
-const INTERNAL_SECRET = process.env.INTERNAL_SECRET || 'dev-secret-change-in-production';
-
-app.post('/api/internal/notify-games', async (req, res) => {
-  const authHeader = req.headers['x-internal-secret'];
-  if (authHeader !== INTERNAL_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
+app.post('/api/internal/notify-games', (req, res) => {
+  const gameIds = req.body?.gameIds;
+  if (!Array.isArray(gameIds) || gameIds.length < 1 || gameIds.length > 100 || !gameIds.every(validId)) {
+    return res.status(400).json({ error: 'Provide 1–100 valid game IDs' });
   }
+  const ids = [...new Set(gameIds.map(Number))].sort((a,b) => a-b);
+  jobs.enqueue('notify', { gameIds: ids }, `notify:${hash(JSON.stringify(ids))}`);
+  res.status(202).json({ success: true, queued: ids.length });
+});
 
-  const { gameIds } = req.body;
-  if (!Array.isArray(gameIds) || gameIds.length === 0) {
-    return res.json({ success: true, notified: 0, emails: 0, calendarEvents: 0 });
-  }
-
+async function notifyGames(gameIds) {
   console.log(`[Internal] Processing notifications for ${gameIds.length} new games`);
 
   // Load all games with team info
@@ -1179,6 +1067,7 @@ app.post('/api/internal/notify-games', async (req, res) => {
     if (game) games.push(game);
   }
 
+  if (!games.length) return;
   // Collect all team IDs involved
   const teamIds = [...new Set(games.flatMap(g => [g.team1_id, g.team2_id]))];
 
@@ -1228,9 +1117,14 @@ app.post('/api/internal/notify-games', async (req, res) => {
     });
 
     // Send digest email
-    if (data.channels.has('email')) {
-      await sendDigestEmail(data.user, gamesWithTeams);
-      emailsSent++;
+    if (data.channels.has('email') && isEmailConfigured()) {
+      const unsent = gamesWithTeams.filter(({game}) => db.run(
+        "INSERT OR IGNORE INTO game_notifications(user_id,game_id,channel) VALUES(?,?,'email')", [userId,game.id]).changes);
+      // Claim before sending: retries/crashes cannot duplicate a delivered digest.
+      if (unsent.length) {
+        if (await sendDigestEmail(data.user, unsent)) emailsSent++;
+        else console.error('Digest delivery failed; claim retained to prevent duplicate sends');
+      }
     }
 
     // Create calendar events (still individual)
@@ -1245,7 +1139,7 @@ app.post('/api/internal/notify-games', async (req, res) => {
           const eventId = await createCalendarEvent(data.user, game, team);
           if (eventId) {
             await db.run(
-              'INSERT INTO calendar_events (user_id, game_id, calendar_event_id) VALUES (?, ?, ?)',
+              'INSERT OR IGNORE INTO calendar_events (user_id, game_id, calendar_event_id) VALUES (?, ?, ?)',
               [userId, game.id, eventId]
             );
             calendarEventsCreated++;
@@ -1256,22 +1150,16 @@ app.post('/api/internal/notify-games', async (req, res) => {
   }
 
   console.log(`[Internal] Sent ${emailsSent} digest emails, created ${calendarEventsCreated} calendar events`);
-  res.json({ success: true, notified: games.length, emails: emailsSent, calendarEvents: calendarEventsCreated });
-});
+}
 
 // POST /api/internal/run-scraper - Manually trigger the scraping pipeline (for testing)
 app.post('/api/internal/run-scraper', async (req, res) => {
-  const secret = req.headers['x-internal-secret'];
-  if (secret !== INTERNAL_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
   console.log('[Internal] Manual scraper trigger requested');
 
   // Run asynchronously so we can respond immediately
   runScrapingPipeline()
     .then(() => console.log('[Internal] Manual scraper run completed'))
-    .catch(err => console.error('[Internal] Manual scraper run failed:', err));
+    .catch(() => console.error('[Internal] Manual scraper run failed'));
 
   res.json({ success: true, message: 'Scraping pipeline started. Check server logs for progress.' });
 });
@@ -1280,11 +1168,19 @@ app.post('/api/internal/run-scraper', async (req, res) => {
 
 import { initScheduler, runScrapingPipeline } from './scheduler.js';
 
-app.listen(port, () => {
-  console.log(`✓ API listening on http://localhost:${port}`);
-
-  // Initialize scheduler in production
-  if (process.env.NODE_ENV === 'production') {
-    initScheduler(false); // Don't run immediately on startup
-  }
+const jobs = createJobQueue(db, {
+  calendar: ({ userId, teamId }) => addTeamGamesToCalendar(userId, teamId),
+  notify: ({ gameIds }) => notifyGames(gameIds),
 });
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  const status = [400, 413, 429, 503].includes(error.status) ? error.status : 500;
+  res.status(status).json({ error: status === 500 ? 'Request failed' : 'Invalid or temporarily unavailable request' });
+});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  app.listen(port, () => {
+    console.log(`API listening on port ${port}`);
+    if (production) initScheduler(false);
+  });
+}
+export { app, db, jobs };
